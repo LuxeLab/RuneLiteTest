@@ -14,7 +14,7 @@ repositories {
 }
 
 def runeLiteVersion = 'latest.release'
-def pluginMainClass = 'com.jr.prayertrace.PrayerTracePluginTest'
+def pluginMainClass = 'com.jr.prayertoggle.PrayerTogglePluginTest'
 
 dependencies {
 	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
