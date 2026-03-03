@@ -14,7 +14,7 @@ repositories {
 }
 
 def runeLiteVersion = 'latest.release'
-def pluginMainClass = 'com.jr.autotyper.AutoTyperPluginTest'
+def pluginMainClass = 'com.jr.thickskin.ThickSkinPluginTest'
 
 dependencies {
 	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
