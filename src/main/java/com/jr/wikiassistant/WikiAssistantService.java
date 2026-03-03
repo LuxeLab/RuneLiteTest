@@ -68,6 +68,11 @@ public class WikiAssistantService
 		log.info("[WikiAssistantService] answer() question={}", question);
 		String q = question.toLowerCase(Locale.ROOT).trim();
 
+		if (isCapabilityQuestion(q))
+		{
+			return capabilityHelpText();
+		}
+
 		if (q.contains("cooking") && q.contains("bank") && (q.contains("level") || q.contains("xp")))
 		{
 			log.info("[WikiAssistantService] routing to cooking projection");
@@ -279,6 +284,31 @@ public class WikiAssistantService
 		}
 
 		return xp.get();
+	}
+
+	private boolean isCapabilityQuestion(String q)
+	{
+		return q.equals("what can you help me with")
+			|| q.equals("what can you do")
+			|| q.contains("help me with")
+			|| q.contains("what can i ask")
+			|| q.contains("capabilities");
+	}
+
+	private String capabilityHelpText()
+	{
+		return "I’m best at wiki-grounded OSRS answers + live account context.\n\n"
+			+ "What I can do right now:\n"
+			+ "• Cooking projection from your bank raw foods\n"
+			+ "• Explain quests, items, bosses, skilling methods from OSRS Wiki\n"
+			+ "• Compare methods and summarize wiki pages with links\n"
+			+ "• Use your current in-game context (skills/inventory/bank when available)\n\n"
+			+ "Best question formats:\n"
+			+ "1) ‘What cooking level can I reach with raw food in my bank?’\n"
+			+ "2) ‘What are good money makers for my stats?’\n"
+			+ "3) ‘How do I start [quest name] and what are requirements?’\n"
+			+ "4) ‘Compare X vs Y training methods for [skill]’\n\n"
+			+ "Source of truth: https://oldschool.runescape.wiki/";
 	}
 
 	private static JsonObject getJson(String url) throws Exception
