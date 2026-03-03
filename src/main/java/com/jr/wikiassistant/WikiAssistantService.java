@@ -228,8 +228,9 @@ public class WikiAssistantService
 	{
 		try
 		{
-			String sources = buildWikiSources(normalizedQuestion);
-			if (sources == null)
+			RetrievalPlan plan = buildRetrievalPlan(normalizedQuestion);
+			String sources = executeRetrievalPlan(plan, normalizedQuestion);
+			if (sources == null || sources.isBlank())
 			{
 				return "No wiki results found for that question.";
 			}
@@ -273,11 +274,75 @@ public class WikiAssistantService
 		}
 	}
 
-	private String buildWikiSources(String question) throws Exception
+	private RetrievalPlan buildRetrievalPlan(String normalizedQuestion)
+	{
+		String q = normalizedQuestion.toLowerCase(Locale.ROOT);
+		RetrievalPlan plan = new RetrievalPlan();
+
+		if (q.contains("requirement") && q.contains("quest"))
+		{
+			plan.intent = "quest_requirements";
+			String quest = extractQuestCandidate(normalizedQuestion);
+			if (quest != null)
+			{
+				plan.primaryEntity = quest;
+			}
+			plan.needsStructuredRequirements = true;
+			plan.fallbackSearch = true;
+			return plan;
+		}
+
+		if (q.contains("equip") || q.contains("wear") || q.contains("required"))
+		{
+			plan.intent = "item_requirements";
+			String item = resolveCanonicalItemFromQuestion(normalizedQuestion);
+			if (item != null)
+			{
+				plan.primaryEntity = item;
+			}
+			plan.needsStructuredRequirements = true;
+			plan.fallbackSearch = true;
+			return plan;
+		}
+
+		plan.intent = "general";
+		plan.fallbackSearch = true;
+		return plan;
+	}
+
+	private String executeRetrievalPlan(RetrievalPlan plan, String normalizedQuestion) throws Exception
+	{
+		StringBuilder sources = new StringBuilder();
+
+		if (plan.primaryEntity != null)
+		{
+			String page = fetchPageText(plan.primaryEntity);
+			if (page != null && !page.isBlank())
+			{
+				String clipped = page.substring(0, Math.min(page.length(), 3500));
+				sources.append("- ").append(plan.primaryEntity).append(" (canonical)\n")
+					.append("  ").append(clipped).append("\n")
+					.append("  ").append(WIKI_BASE).append("/w/").append(plan.primaryEntity.replace(' ', '_')).append("\n");
+			}
+		}
+
+		if (plan.fallbackSearch)
+		{
+			String search = buildWikiSearchSources(normalizedQuestion, 4);
+			if (search != null)
+			{
+				sources.append(search);
+			}
+		}
+
+		return sources.toString();
+	}
+
+	private String buildWikiSearchSources(String question, int limit) throws Exception
 	{
 		String searchUrl = WIKI_BASE + "/api.php?action=query&list=search&srsearch="
 			+ URLEncoder.encode(question, StandardCharsets.UTF_8)
-			+ "&format=json&srlimit=5";
+			+ "&format=json&srlimit=" + limit;
 
 		JsonObject searchJson = getJson(searchUrl);
 		JsonArray results = searchJson.getAsJsonObject("query").getAsJsonArray("search");
@@ -287,7 +352,7 @@ public class WikiAssistantService
 		}
 
 		StringBuilder sources = new StringBuilder();
-		for (int i = 0; i < Math.min(5, results.size()); i++)
+		for (int i = 0; i < Math.min(limit, results.size()); i++)
 		{
 			JsonObject r = results.get(i).getAsJsonObject();
 			String title = r.get("title").getAsString();
@@ -831,6 +896,14 @@ public class WikiAssistantService
 			String body = in.lines().collect(Collectors.joining("\n"));
 			return JsonParser.parseString(body).getAsJsonObject();
 		}
+	}
+
+	private static class RetrievalPlan
+	{
+		String intent;
+		String primaryEntity;
+		boolean needsStructuredRequirements;
+		boolean fallbackSearch;
 	}
 
 	private static class AreaBound
