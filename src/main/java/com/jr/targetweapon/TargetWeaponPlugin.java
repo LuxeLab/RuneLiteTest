@@ -19,6 +19,9 @@ import net.runelite.api.kit.KitType;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.ItemEquipmentStats;
+import net.runelite.client.game.ItemManager;
+import net.runelite.client.game.ItemStats;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
@@ -39,6 +42,9 @@ public class TargetWeaponPlugin extends Plugin
 
 	@Inject
 	private ClientThread clientThread;
+
+	@Inject
+	private ItemManager itemManager;
 
 	@Inject
 	private OverlayManager overlayManager;
@@ -122,9 +128,22 @@ public class TargetWeaponPlugin extends Plugin
 			);
 		}
 
-		if (changed && config.autoThickSkinOnWeapon() && normalizedWeaponId == config.triggerWeaponId())
+		if (changed && config.autoThickSkinOnWeapon())
 		{
-			clientThread.invoke(this::activateThickSkinIfNeeded);
+			boolean shouldTrigger;
+			if (config.useMagicWeaponDetection())
+			{
+				shouldTrigger = isLikelyMagicWeapon(normalizedWeaponId);
+			}
+			else
+			{
+				shouldTrigger = normalizedWeaponId == config.triggerWeaponId();
+			}
+
+			if (shouldTrigger)
+			{
+				clientThread.invoke(this::activateThickSkinIfNeeded);
+			}
 		}
 
 		lastTargetName = targetName;
@@ -153,6 +172,34 @@ public class TargetWeaponPlugin extends Plugin
 		return s == null ? "" : s;
 	}
 
+	private boolean isLikelyMagicWeapon(int weaponItemId)
+	{
+		if (weaponItemId <= 0)
+		{
+			return false;
+		}
+
+		ItemStats stats = itemManager.getItemStats(weaponItemId);
+		if (stats != null)
+		{
+			ItemEquipmentStats eq = stats.getEquipment();
+			if (eq != null)
+			{
+				int melee = Math.max(eq.getAstab(), Math.max(eq.getAslash(), eq.getAcrush()));
+				int magic = eq.getAmagic();
+				int ranged = eq.getArange();
+
+				if (magic > ranged && magic > melee && magic > 0)
+				{
+					return true;
+				}
+			}
+		}
+
+		String name = itemManager.getItemComposition(weaponItemId).getName().toLowerCase();
+		return name.contains("staff") || name.contains("wand") || name.contains("trident") || name.contains("sceptre") || name.contains("kodai") || name.contains("nightmare staff");
+	}
+
 	private void activateThickSkinIfNeeded()
 	{
 		if (client.getGameState() != GameState.LOGGED_IN)
@@ -178,7 +225,7 @@ public class TargetWeaponPlugin extends Plugin
 			"Thick Skin"
 		);
 		addLine("Auto: Thick Skin ON");
-		log.info("[TARGET] Trigger weapon detected ({}), requested Thick Skin activate", config.triggerWeaponId());
+		log.info("[TARGET] Trigger condition met, requested Thick Skin activate");
 	}
 
 	private void addLine(String line)

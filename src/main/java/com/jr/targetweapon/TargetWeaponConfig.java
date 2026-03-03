@@ -29,8 +29,8 @@ public interface TargetWeaponConfig extends Config
 
 	@ConfigItem(
 		keyName = "autoThickSkinOnWeapon",
-		name = "Auto Thick Skin on weapon",
-		description = "Turn on Thick Skin if target equips trigger weapon ID"
+		name = "Auto Thick Skin",
+		description = "Automatically turn on Thick Skin based on target weapon"
 	)
 	default boolean autoThickSkinOnWeapon()
 	{
@@ -38,9 +38,19 @@ public interface TargetWeaponConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "useMagicWeaponDetection",
+		name = "Use magic-weapon detection",
+		description = "If enabled, turns on Thick Skin when target weapon is classified as magic"
+	)
+	default boolean useMagicWeaponDetection()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "triggerWeaponId",
-		name = "Trigger weapon ID",
-		description = "Normalized weapon item ID that triggers Thick Skin"
+		name = "Fallback trigger weapon ID",
+		description = "Used when magic-weapon detection is off"
 	)
 	default int triggerWeaponId()
 	{
