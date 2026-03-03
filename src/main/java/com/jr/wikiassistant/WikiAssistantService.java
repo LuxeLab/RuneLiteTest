@@ -279,7 +279,7 @@ public class WikiAssistantService
 		String q = normalizedQuestion.toLowerCase(Locale.ROOT);
 		RetrievalPlan plan = new RetrievalPlan();
 
-		if (q.contains("requirement") && q.contains("quest"))
+		if (q.contains("require") && (q.contains("quest") || q.contains("recipe for disaster") || q.matches(".*requirements?\\s+for\\s+.*")))
 		{
 			plan.intent = "quest_requirements";
 			String quest = extractQuestCandidate(normalizedQuestion);
@@ -677,7 +677,10 @@ public class WikiAssistantService
 
 	private boolean isQuestRequirementQuestion(String q)
 	{
-		return q.contains("quest") && q.contains("require");
+		return q.contains("require")
+			&& (q.contains("quest")
+				|| q.contains("recipe for disaster")
+				|| q.matches(".*requirements?\\s+for\\s+.*"));
 	}
 
 	private String answerEquipmentRequirementDeterministic(String normalizedQuestion)
@@ -762,6 +765,12 @@ public class WikiAssistantService
 		{
 			return toTitleCase(m.group(1).trim());
 		}
+
+		if (q.toLowerCase(Locale.ROOT).contains("recipe for disaster"))
+		{
+			return "Recipe for Disaster";
+		}
+
 		return null;
 	}
 
