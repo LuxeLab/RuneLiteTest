@@ -25,6 +25,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -111,6 +113,12 @@ public class WikiAssistantService
 		ALIAS_MAP.put("anc", "ancestral robes");
 		ALIAS_MAP.put("ppot", "prayer potion");
 		ALIAS_MAP.put("stam", "stamina potion");
+		ALIAS_MAP.put("dragonfire shield", "dragonfire shield");
+		ALIAS_MAP.put("dragon warhammer", "dragon warhammer");
+		ALIAS_MAP.put("toxic blowpipe", "toxic blowpipe");
+		ALIAS_MAP.put("armadyl crossbow", "armadyl crossbow");
+		ALIAS_MAP.put("bandos chestplate", "bandos chestplate");
+		ALIAS_MAP.put("bow of faerdhinen", "bow of faerdhinen");
 
 		ALIAS_MAP.put("def", "defence");
 		ALIAS_MAP.put("lvl", "level");
@@ -135,6 +143,24 @@ public class WikiAssistantService
 		if (isLocationQuestion(q))
 		{
 			return answerLocationQuestion();
+		}
+
+		if (isEquipmentRequirementQuestion(q))
+		{
+			String deterministic = answerEquipmentRequirementDeterministic(normalizedQuestion);
+			if (deterministic != null)
+			{
+				return deterministic;
+			}
+		}
+
+		if (isQuestRequirementQuestion(q))
+		{
+			String questAnswer = answerQuestRequirementQuestion(normalizedQuestion);
+			if (questAnswer != null)
+			{
+				return questAnswer;
+			}
 		}
 
 		if (q.contains("cooking") && q.contains("bank") && (q.contains("level") || q.contains("xp")))
@@ -550,6 +576,125 @@ public class WikiAssistantService
 		}
 
 		return xp.get();
+	}
+
+	private boolean isEquipmentRequirementQuestion(String q)
+	{
+		return q.contains("equip") && (q.contains("what") || q.contains("required") || q.contains("need"));
+	}
+
+	private boolean isQuestRequirementQuestion(String q)
+	{
+		return q.contains("quest") && q.contains("require");
+	}
+
+	private String answerEquipmentRequirementDeterministic(String normalizedQuestion)
+	{
+		String item = resolveCanonicalItemFromQuestion(normalizedQuestion);
+		if (item == null)
+		{
+			return null;
+		}
+
+		try
+		{
+			String pageText = fetchPageText(item);
+			if (pageText == null || pageText.isBlank())
+			{
+				return null;
+			}
+
+			Matcher m = Pattern.compile("(?i)requires(?:\\s+level)?\\s+(\\d{1,2})\\s+defen[cs]e").matcher(pageText);
+			if (m.find())
+			{
+				String level = m.group(1);
+				return item + " requires level " + level + " Defence to equip.\n\nSource: " + WIKI_BASE + "/w/" + item.replace(' ', '_');
+			}
+
+			return item + " found, but I couldn't deterministically parse Defence requirement from page text.\n\nSource: "
+				+ WIKI_BASE + "/w/" + item.replace(' ', '_');
+		}
+		catch (Exception e)
+		{
+			log.error("Deterministic equipment parse failed", e);
+			return null;
+		}
+	}
+
+	private String answerQuestRequirementQuestion(String normalizedQuestion)
+	{
+		try
+		{
+			String quest = extractQuestCandidate(normalizedQuestion);
+			if (quest == null)
+			{
+				return null;
+			}
+
+			String pageText = fetchPageText(quest);
+			if (pageText == null || pageText.isBlank())
+			{
+				return null;
+			}
+
+			String clipped = pageText.substring(0, Math.min(pageText.length(), 6000));
+			String sources = "- " + quest + "\n  " + WIKI_BASE + "/w/" + quest.replace(' ', '_') + "\n";
+			ModelResult r = askModel(config.modelA(), normalizedQuestion, normalizedQuestion, sources + "\nPage extract:\n" + clipped);
+			appendEvalLog(r);
+			return r.answer + "\n\nSource: " + WIKI_BASE + "/w/" + quest.replace(' ', '_');
+		}
+		catch (Exception e)
+		{
+			log.error("Quest requirement path failed", e);
+			return null;
+		}
+	}
+
+	private String resolveCanonicalItemFromQuestion(String q)
+	{
+		String best = null;
+		for (String canonical : ALIAS_MAP.values())
+		{
+			if (q.contains(canonical) && (best == null || canonical.length() > best.length()))
+			{
+				best = canonical;
+			}
+		}
+		return best == null ? null : toTitleCase(best);
+	}
+
+	private static String extractQuestCandidate(String q)
+	{
+		Matcher m = Pattern.compile("(?i)requirements?\\s+(?:for|of)?\\s*([a-z0-9'\\- ]{3,})").matcher(q);
+		if (m.find())
+		{
+			return toTitleCase(m.group(1).trim());
+		}
+		return null;
+	}
+
+	private static String toTitleCase(String s)
+	{
+		String[] parts = s.toLowerCase(Locale.ROOT).split("\\s+");
+		StringBuilder b = new StringBuilder();
+		for (int i = 0; i < parts.length; i++)
+		{
+			if (parts[i].isBlank()) continue;
+			b.append(Character.toUpperCase(parts[i].charAt(0))).append(parts[i].substring(1));
+			if (i < parts.length - 1) b.append(' ');
+		}
+		return b.toString();
+	}
+
+	private String fetchPageText(String title) throws Exception
+	{
+		String url = WIKI_BASE + "/api.php?action=parse&page=" + URLEncoder.encode(title, StandardCharsets.UTF_8)
+			+ "&prop=text&format=json";
+		JsonObject json = getJson(url);
+		JsonObject parse = json.getAsJsonObject("parse");
+		if (parse == null) return null;
+		String html = parse.getAsJsonObject("text").get("*").getAsString();
+		return html.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
 	}
 
 	private String normalizeQuestion(String question)
