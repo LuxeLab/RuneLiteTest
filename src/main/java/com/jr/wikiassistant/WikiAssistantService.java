@@ -12,6 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -23,6 +26,7 @@ import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.ItemID;
 import net.runelite.api.Skill;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
 
 @Slf4j
@@ -36,6 +40,9 @@ public class WikiAssistantService
 
 	@Inject
 	private ItemManager itemManager;
+
+	@Inject
+	private ClientThread clientThread;
 
 	private static final Map<Integer, Double> COOKING_XP = new HashMap<>();
 	static
@@ -74,8 +81,9 @@ public class WikiAssistantService
 	private String answerCookingProjection()
 	{
 		log.info("[WikiAssistantService] answerCookingProjection() start");
-		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
-		if (bank == null)
+
+		final Item[] bankItems = getBankItemsSnapshot();
+		if (bankItems == null)
 		{
 			log.info("[WikiAssistantService] bank container is null");
 			return "Open your bank first so I can read raw food quantities.";
@@ -83,7 +91,7 @@ public class WikiAssistantService
 
 		double totalXp = 0;
 		StringBuilder breakdown = new StringBuilder();
-		for (Item item : bank.getItems())
+		for (Item item : bankItems)
 		{
 			if (item == null || item.getId() <= 0 || item.getQuantity() <= 0)
 			{
@@ -108,7 +116,7 @@ public class WikiAssistantService
 			return "I couldn't find recognized raw cookable foods in your bank (MVP list).";
 		}
 
-		int currentXp = client.getSkillExperience(Skill.COOKING);
+		int currentXp = getCookingXpSnapshot();
 		int currentLevel = Experience.getLevelForXp(currentXp);
 		double projectedXp = currentXp + totalXp;
 		int projectedLevel = Experience.getLevelForXp((int) projectedXp);
@@ -174,6 +182,70 @@ public class WikiAssistantService
 			log.error("Wiki search failed", e);
 			return "Failed to query OSRS Wiki right now. Try again.";
 		}
+	}
+
+	private Item[] getBankItemsSnapshot()
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		final Item[][] result = new Item[1][];
+
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				ItemContainer bank = client.getItemContainer(InventoryID.BANK);
+				result[0] = bank == null ? null : bank.getItems();
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+
+		try
+		{
+			if (!latch.await(3, TimeUnit.SECONDS))
+			{
+				log.warn("Timed out reading bank snapshot on client thread");
+				return null;
+			}
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+			return null;
+		}
+
+		return result[0];
+	}
+
+	private int getCookingXpSnapshot()
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		AtomicInteger xp = new AtomicInteger(0);
+
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				xp.set(client.getSkillExperience(Skill.COOKING));
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+
+		try
+		{
+			latch.await(2, TimeUnit.SECONDS);
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+
+		return xp.get();
 	}
 
 	private static JsonObject getJson(String url) throws Exception
