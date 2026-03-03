@@ -48,17 +48,22 @@ public class WikiAssistantPanel extends PluginPanel
 
 	private void ask()
 	{
+		System.out.println("[WikiAssistantPanel] ask() invoked");
 		String q = questionField.getText();
 		if (q == null || q.isBlank())
 		{
+			System.out.println("[WikiAssistantPanel] empty question");
 			return;
 		}
+
+		System.out.println("[WikiAssistantPanel] question=" + q);
 
 		askButton.setEnabled(false);
 		outputArea.setText("Thinking...\n");
 
 		new Thread(() ->
 		{
+			System.out.println("[WikiAssistantPanel] worker thread start");
 			String answer;
 			try
 			{
@@ -66,8 +71,11 @@ public class WikiAssistantPanel extends PluginPanel
 			}
 			catch (Exception ex)
 			{
-				answer = "Error while answering: " + ex.getMessage();
+				ex.printStackTrace();
+				answer = "Error while answering: " + ex.getClass().getSimpleName() + " - " + ex.getMessage();
 			}
+
+			System.out.println("[WikiAssistantPanel] worker finished, answer length=" + (answer == null ? -1 : answer.length()));
 
 			final String finalAnswer = answer;
 			javax.swing.SwingUtilities.invokeLater(() ->

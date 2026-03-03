@@ -58,21 +58,26 @@ public class WikiAssistantService
 
 	public String answer(String question)
 	{
+		log.info("[WikiAssistantService] answer() question={}", question);
 		String q = question.toLowerCase(Locale.ROOT).trim();
 
 		if (q.contains("cooking") && q.contains("bank") && (q.contains("level") || q.contains("xp")))
 		{
+			log.info("[WikiAssistantService] routing to cooking projection");
 			return answerCookingProjection();
 		}
 
+		log.info("[WikiAssistantService] routing to wiki search");
 		return answerFromWikiSearch(question);
 	}
 
 	private String answerCookingProjection()
 	{
+		log.info("[WikiAssistantService] answerCookingProjection() start");
 		ItemContainer bank = client.getItemContainer(InventoryID.BANK);
 		if (bank == null)
 		{
+			log.info("[WikiAssistantService] bank container is null");
 			return "Open your bank first so I can read raw food quantities.";
 		}
 
@@ -99,6 +104,7 @@ public class WikiAssistantService
 
 		if (totalXp <= 0)
 		{
+			log.info("[WikiAssistantService] no cookable foods found in bank subset");
 			return "I couldn't find recognized raw cookable foods in your bank (MVP list).";
 		}
 
@@ -117,6 +123,7 @@ public class WikiAssistantService
 			.append("\nSource: OSRS Wiki cooking xp values (MVP subset) + live bank data from RuneLite.\n")
 			.append("Wiki: https://oldschool.runescape.wiki/w/Cooking");
 
+		log.info("[WikiAssistantService] cooking projection complete totalXp={} projectedLevel={}", totalXp, projectedLevel);
 		return out.toString();
 	}
 
@@ -124,6 +131,7 @@ public class WikiAssistantService
 	{
 		try
 		{
+			log.info("[WikiAssistantService] answerFromWikiSearch start");
 			String searchUrl = WIKI_BASE + "/api.php?action=query&list=search&srsearch="
 				+ URLEncoder.encode(question, StandardCharsets.UTF_8)
 				+ "&format=json&srlimit=3";
@@ -132,8 +140,11 @@ public class WikiAssistantService
 			JsonArray results = searchJson.getAsJsonObject("query").getAsJsonArray("search");
 			if (results.size() == 0)
 			{
+				log.info("[WikiAssistantService] no wiki results");
 				return "No wiki results found for that question.";
 			}
+
+			log.info("[WikiAssistantService] wiki results count={}", results.size());
 
 			StringBuilder out = new StringBuilder();
 			out.append("Wiki-grounded results:\n\n");
@@ -155,6 +166,7 @@ public class WikiAssistantService
 
 			out.append("I can do stronger calculations when the query references in-game context (bank/inventory/skills).\n")
 				.append("Source of truth: https://oldschool.runescape.wiki/");
+			log.info("[WikiAssistantService] wiki answer built");
 			return out.toString();
 		}
 		catch (Exception e)
