@@ -59,10 +59,20 @@ public class WikiAssistantPanel extends PluginPanel
 
 		new Thread(() ->
 		{
-			String answer = service.answer(q);
+			String answer;
+			try
+			{
+				answer = service.answer(q);
+			}
+			catch (Exception ex)
+			{
+				answer = "Error while answering: " + ex.getMessage();
+			}
+
+			final String finalAnswer = answer;
 			javax.swing.SwingUtilities.invokeLater(() ->
 			{
-				outputArea.setText(answer);
+				outputArea.setText(finalAnswer);
 				askButton.setEnabled(true);
 			});
 		}, "wiki-assistant-worker").start();
