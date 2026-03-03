@@ -62,6 +62,7 @@ public class WikiAssistantService
 	private static final Map<Integer, Double> COOKING_XP = new HashMap<>();
 	private static final Map<String, double[]> MODEL_PRICES_PER_M = new HashMap<>();
 	private static final List<AreaBound> AREA_BOUNDS = new ArrayList<>();
+	private static final Map<String, String> ALIAS_MAP = new HashMap<>();
 
 	static
 	{
@@ -94,6 +95,30 @@ public class WikiAssistantService
 		AREA_BOUNDS.add(new AreaBound("Al Kharid", 3265, 3140, 3335, 3218));
 		AREA_BOUNDS.add(new AreaBound("Draynor Village", 3070, 3200, 3135, 3290));
 		AREA_BOUNDS.add(new AreaBound("Barbarian Village", 3050, 3380, 3130, 3460));
+
+		// Common OSRS aliases/slang (seeded from OSRS Wiki redirects + slang dictionary).
+		ALIAS_MAP.put("dfs", "dragonfire shield");
+		ALIAS_MAP.put("dwh", "dragon warhammer");
+		ALIAS_MAP.put("bp", "toxic blowpipe");
+		ALIAS_MAP.put("bofa", "bow of faerdhinen");
+		ALIAS_MAP.put("acb", "armadyl crossbow");
+		ALIAS_MAP.put("bcp", "bandos chestplate");
+		ALIAS_MAP.put("tbow", "twisted bow");
+		ALIAS_MAP.put("scy", "scythe of vitur");
+		ALIAS_MAP.put("vw", "voidwaker");
+		ALIAS_MAP.put("ags", "armadyl godsword");
+		ALIAS_MAP.put("bgs", "bandos godsword");
+		ALIAS_MAP.put("anc", "ancestral robes");
+		ALIAS_MAP.put("ppot", "prayer potion");
+		ALIAS_MAP.put("stam", "stamina potion");
+
+		ALIAS_MAP.put("def", "defence");
+		ALIAS_MAP.put("lvl", "level");
+		ALIAS_MAP.put("req", "required");
+		ALIAS_MAP.put("str", "strength");
+		ALIAS_MAP.put("att", "attack");
+		ALIAS_MAP.put("pray", "prayer");
+		ALIAS_MAP.put("mage", "magic");
 	}
 
 	public String answer(String question)
@@ -535,12 +560,11 @@ public class WikiAssistantService
 		}
 
 		String q = question.trim().toLowerCase(Locale.ROOT);
-		q = q.replaceAll("\\bdef\\b", "defence");
-		q = q.replaceAll("\\blvl\\b", "level");
-		q = q.replaceAll("\\breq\\b", "required");
-		q = q.replaceAll("\\bdfs\\b", "dragonfire shield");
-		q = q.replaceAll("\\bstr\\b", "strength");
-		q = q.replaceAll("\\batt\\b", "attack");
+
+		for (Map.Entry<String, String> e : ALIAS_MAP.entrySet())
+		{
+			q = q.replaceAll("\\b" + java.util.regex.Pattern.quote(e.getKey()) + "\\b", e.getValue());
+		}
 
 		if (q.matches(".*what\\s+defence\\s+level.*dragonfire shield.*") || q.matches(".*dragonfire shield.*defence.*level.*"))
 		{
