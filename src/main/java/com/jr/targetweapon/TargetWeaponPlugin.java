@@ -4,7 +4,9 @@ import com.google.inject.Provides;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -57,7 +59,11 @@ public class TargetWeaponPlugin extends Plugin
 	private static final int THICK_SKIN_WIDGET_ID = 35454985; // captured from prayer trace logger
 
 	private String lastTargetName;
+	private int lastTargetIndex = -1;
 	private int lastWeaponId = Integer.MIN_VALUE;
+	private int lastPrayerTriggerTick = -9999;
+	private final Map<Integer, Boolean> magicWeaponCache = new HashMap<>();
+	private static final int PRAYER_TRIGGER_COOLDOWN_TICKS = 2;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -69,7 +75,10 @@ public class TargetWeaponPlugin extends Plugin
 	protected void startUp()
 	{
 		lastTargetName = null;
+		lastTargetIndex = -1;
 		lastWeaponId = Integer.MIN_VALUE;
+		lastPrayerTriggerTick = -9999;
+		magicWeaponCache.clear();
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -96,6 +105,12 @@ public class TargetWeaponPlugin extends Plugin
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
 		{
+			if (lastTargetIndex != -1)
+			{
+				lastTargetName = null;
+				lastTargetIndex = -1;
+				lastWeaponId = Integer.MIN_VALUE;
+			}
 			if (!config.logOnlyOnChange())
 			{
 				log.info("[TARGET] no player target");
@@ -114,7 +129,8 @@ public class TargetWeaponPlugin extends Plugin
 		int normalizedWeaponId = normalizeItemId(rawWeaponId);
 		String targetName = safe(target.getName());
 
-		boolean changed = !targetName.equals(lastTargetName) || normalizedWeaponId != lastWeaponId;
+		int targetIndex = target.getId();
+		boolean changed = targetIndex != lastTargetIndex || !targetName.equals(lastTargetName) || normalizedWeaponId != lastWeaponId;
 		if (!config.logOnlyOnChange() || changed)
 		{
 			String line = String.format("%s | wpn=%d", targetName, normalizedWeaponId);
@@ -142,11 +158,17 @@ public class TargetWeaponPlugin extends Plugin
 
 			if (shouldTrigger)
 			{
-				clientThread.invoke(this::activateThickSkinIfNeeded);
+				int tick = client.getTickCount();
+				if (tick - lastPrayerTriggerTick >= PRAYER_TRIGGER_COOLDOWN_TICKS)
+				{
+					lastPrayerTriggerTick = tick;
+					clientThread.invoke(this::activateThickSkinIfNeeded);
+				}
 			}
 		}
 
 		lastTargetName = targetName;
+		lastTargetIndex = targetIndex;
 		lastWeaponId = normalizedWeaponId;
 	}
 
@@ -179,6 +201,13 @@ public class TargetWeaponPlugin extends Plugin
 			return false;
 		}
 
+		Boolean cached = magicWeaponCache.get(weaponItemId);
+		if (cached != null)
+		{
+			return cached;
+		}
+
+		boolean result = false;
 		ItemStats stats = itemManager.getItemStats(weaponItemId);
 		if (stats != null)
 		{
@@ -188,16 +217,18 @@ public class TargetWeaponPlugin extends Plugin
 				int melee = Math.max(eq.getAstab(), Math.max(eq.getAslash(), eq.getAcrush()));
 				int magic = eq.getAmagic();
 				int ranged = eq.getArange();
-
-				if (magic > ranged && magic > melee && magic > 0)
-				{
-					return true;
-				}
+				result = magic > ranged && magic > melee && magic > 0;
 			}
 		}
 
-		String name = itemManager.getItemComposition(weaponItemId).getName().toLowerCase();
-		return name.contains("staff") || name.contains("wand") || name.contains("trident") || name.contains("sceptre") || name.contains("kodai") || name.contains("nightmare staff");
+		if (!result)
+		{
+			String name = itemManager.getItemComposition(weaponItemId).getName().toLowerCase();
+			result = name.contains("staff") || name.contains("wand") || name.contains("trident") || name.contains("sceptre") || name.contains("kodai") || name.contains("nightmare staff");
+		}
+
+		magicWeaponCache.put(weaponItemId, result);
+		return result;
 	}
 
 	private void activateThickSkinIfNeeded()
