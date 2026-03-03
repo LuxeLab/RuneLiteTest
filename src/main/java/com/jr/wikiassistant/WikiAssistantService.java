@@ -106,7 +106,7 @@ public class WikiAssistantService
 
 			double gained = xp * item.getQuantity();
 			totalXp += gained;
-			String name = itemManager.getItemComposition(item.getId()).getName();
+			String name = getItemNameSnapshot(item.getId());
 			breakdown.append(String.format("- %s x%d => %.1f xp%n", name, item.getQuantity(), gained));
 		}
 
@@ -217,6 +217,39 @@ public class WikiAssistantService
 		}
 
 		return result[0];
+	}
+
+	private String getItemNameSnapshot(int itemId)
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		final String[] name = new String[]{"item:" + itemId};
+
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				name[0] = itemManager.getItemComposition(itemId).getName();
+			}
+			catch (Exception ignored)
+			{
+				name[0] = "item:" + itemId;
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+
+		try
+		{
+			latch.await(2, TimeUnit.SECONDS);
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+
+		return name[0];
 	}
 
 	private int getCookingXpSnapshot()

@@ -69,7 +69,7 @@ public class WikiAssistantPanel extends PluginPanel
 			{
 				answer = service.answer(q);
 			}
-			catch (Exception ex)
+			catch (Throwable ex)
 			{
 				ex.printStackTrace();
 				answer = "Error while answering: " + ex.getClass().getSimpleName() + " - " + ex.getMessage();
