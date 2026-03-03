@@ -257,7 +257,9 @@ public class WikiAssistantService
 					appendEvalLog(results[i]);
 				}
 
-				return renderParallelResults(originalQuestion, normalizedQuestion, results);
+				String rendered = renderParallelResults(originalQuestion, normalizedQuestion, results);
+				appendAggregateLog(originalQuestion, normalizedQuestion, rendered);
+				return rendered;
 			}
 			finally
 			{
@@ -405,6 +407,31 @@ public class WikiAssistantService
 		double inputCost = (promptTokens / 1_000_000.0) * rates[0];
 		double outputCost = (completionTokens / 1_000_000.0) * rates[1];
 		return inputCost + outputCost;
+	}
+
+	private static synchronized void appendAggregateLog(String originalQuestion, String normalizedQuestion, String renderedOutput)
+	{
+		try
+		{
+			Files.createDirectories(EVAL_LOG_PATH.getParent());
+			JsonObject j = new JsonObject();
+			j.addProperty("timestamp", Instant.now().toString());
+			j.addProperty("type", "aggregate");
+			j.addProperty("question", originalQuestion);
+			j.addProperty("normalizedQuestion", normalizedQuestion);
+			j.addProperty("renderedOutput", renderedOutput);
+
+			Files.writeString(
+				EVAL_LOG_PATH,
+				j.toString() + System.lineSeparator(),
+				StandardOpenOption.CREATE,
+				StandardOpenOption.APPEND
+			);
+		}
+		catch (Exception e)
+		{
+			log.error("Failed writing aggregate eval log", e);
+		}
 	}
 
 	private static synchronized void appendEvalLog(ModelResult r)
