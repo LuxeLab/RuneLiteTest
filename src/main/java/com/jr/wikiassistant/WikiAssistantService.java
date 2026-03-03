@@ -13,7 +13,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -34,6 +36,7 @@ import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.ItemID;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.game.ItemManager;
 
@@ -58,6 +61,7 @@ public class WikiAssistantService
 
 	private static final Map<Integer, Double> COOKING_XP = new HashMap<>();
 	private static final Map<String, double[]> MODEL_PRICES_PER_M = new HashMap<>();
+	private static final List<AreaBound> AREA_BOUNDS = new ArrayList<>();
 
 	static
 	{
@@ -80,6 +84,16 @@ public class WikiAssistantService
 		MODEL_PRICES_PER_M.put("openai/gpt-4o-mini", new double[]{0.15, 0.60});
 		MODEL_PRICES_PER_M.put("google/gemini-2.0-flash-001", new double[]{0.10, 0.40});
 		MODEL_PRICES_PER_M.put("anthropic/claude-3.5-haiku", new double[]{0.80, 4.00});
+
+		// Coarse area bounds (MVP). Expand over time.
+		AREA_BOUNDS.add(new AreaBound("Lumbridge", 3216, 3178, 3256, 3234));
+		AREA_BOUNDS.add(new AreaBound("Varrock", 3180, 3360, 3250, 3450));
+		AREA_BOUNDS.add(new AreaBound("Falador", 2937, 3310, 3050, 3400));
+		AREA_BOUNDS.add(new AreaBound("Grand Exchange", 3140, 3460, 3195, 3510));
+		AREA_BOUNDS.add(new AreaBound("Edgeville", 3070, 3450, 3118, 3522));
+		AREA_BOUNDS.add(new AreaBound("Al Kharid", 3265, 3140, 3335, 3218));
+		AREA_BOUNDS.add(new AreaBound("Draynor Village", 3070, 3200, 3135, 3290));
+		AREA_BOUNDS.add(new AreaBound("Barbarian Village", 3050, 3380, 3130, 3460));
 	}
 
 	public String answer(String question)
@@ -90,6 +104,11 @@ public class WikiAssistantService
 		if (isCapabilityQuestion(q))
 		{
 			return capabilityHelpText();
+		}
+
+		if (isLocationQuestion(q))
+		{
+			return answerLocationQuestion();
 		}
 
 		if (q.contains("cooking") && q.contains("bank") && (q.contains("level") || q.contains("xp")))
@@ -230,6 +249,16 @@ public class WikiAssistantService
 		return sources.toString();
 	}
 
+	private String buildLiveContext()
+	{
+		WorldPoint wp = getWorldPointSnapshot();
+		if (wp == null)
+		{
+			return "Live context unavailable (not logged in).";
+		}
+		return "WorldPoint=" + wp.getX() + "," + wp.getY() + ",plane=" + wp.getPlane() + "; area=" + resolveAreaName(wp);
+	}
+
 	private ModelResult askModel(String model, String question, String sources) throws Exception
 	{
 		long start = System.currentTimeMillis();
@@ -245,7 +274,7 @@ public class WikiAssistantService
 
 		JsonObject user = new JsonObject();
 		user.addProperty("role", "user");
-		user.addProperty("content", "Question: " + question + "\n\nWiki sources:\n" + sources);
+		user.addProperty("content", "Question: " + question + "\n\nLive RuneLite context:\n" + buildLiveContext() + "\n\nWiki sources:\n" + sources);
 		messages.add(user);
 
 		body.add("messages", messages);
@@ -419,6 +448,50 @@ public class WikiAssistantService
 		return name[0];
 	}
 
+	private WorldPoint getWorldPointSnapshot()
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		final WorldPoint[] wp = new WorldPoint[1];
+
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				if (client.getLocalPlayer() != null)
+				{
+					wp[0] = client.getLocalPlayer().getWorldLocation();
+				}
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+
+		try
+		{
+			latch.await(2, TimeUnit.SECONDS);
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+
+		return wp[0];
+	}
+
+	private String resolveAreaName(WorldPoint wp)
+	{
+		for (AreaBound a : AREA_BOUNDS)
+		{
+			if (a.contains(wp.getX(), wp.getY()))
+			{
+				return a.name;
+			}
+		}
+		return "Unknown area";
+	}
+
 	private int getCookingXpSnapshot()
 	{
 		CountDownLatch latch = new CountDownLatch(1);
@@ -455,6 +528,36 @@ public class WikiAssistantService
 			|| q.contains("help me with")
 			|| q.contains("what can i ask")
 			|| q.contains("capabilities");
+	}
+
+	private boolean isLocationQuestion(String q)
+	{
+		return q.contains("where am i") || q.contains("where i'm") || q.contains("where i am")
+			|| q.contains("what town") || q.contains("my location") || q.contains("my coords") || q.contains("coordinates");
+	}
+
+	private String answerLocationQuestion()
+	{
+		WorldPoint wp = getWorldPointSnapshot();
+		if (wp == null)
+		{
+			return "I couldn't read your live location right now. Make sure you're logged in.";
+		}
+
+		String area = resolveAreaName(wp);
+		String confidence = "high";
+		if (area.equals("Unknown area"))
+		{
+			confidence = "low";
+		}
+
+		return new StringBuilder()
+			.append("Live location context\n\n")
+			.append("- WorldPoint: ").append(wp.getX()).append(", ").append(wp.getY()).append(" (plane ").append(wp.getPlane()).append(")\n")
+			.append("- Inferred area/town: ").append(area).append("\n")
+			.append("- Confidence: ").append(confidence).append("\n\n")
+			.append("Note: area mapping is a coarse MVP bounds table. We can expand with precise map polygons next.")
+			.toString();
 	}
 
 	private String capabilityHelpText()
@@ -502,6 +605,29 @@ public class WikiAssistantService
 		{
 			String body = in.lines().collect(Collectors.joining("\n"));
 			return JsonParser.parseString(body).getAsJsonObject();
+		}
+	}
+
+	private static class AreaBound
+	{
+		private final String name;
+		private final int minX;
+		private final int minY;
+		private final int maxX;
+		private final int maxY;
+
+		private AreaBound(String name, int minX, int minY, int maxX, int maxY)
+		{
+			this.name = name;
+			this.minX = minX;
+			this.minY = minY;
+			this.maxX = maxX;
+			this.maxY = maxY;
+		}
+
+		private boolean contains(int x, int y)
+		{
+			return x >= minX && x <= maxX && y >= minY && y <= maxY;
 		}
 	}
 
