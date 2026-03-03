@@ -44,6 +44,9 @@ public class WikiAssistantService
 	@Inject
 	private ClientThread clientThread;
 
+	@Inject
+	private WikiAssistantConfig config;
+
 	private static final Map<Integer, Double> COOKING_XP = new HashMap<>();
 	static
 	{
@@ -79,8 +82,8 @@ public class WikiAssistantService
 			return answerCookingProjection();
 		}
 
-		log.info("[WikiAssistantService] routing to wiki search");
-		return answerFromWikiSearch(question);
+		log.info("[WikiAssistantService] routing to wiki+ai");
+		return answerFromWikiWithAi(question);
 	}
 
 	private String answerCookingProjection()
@@ -140,29 +143,24 @@ public class WikiAssistantService
 		return out.toString();
 	}
 
-	private String answerFromWikiSearch(String question)
+	private String answerFromWikiWithAi(String question)
 	{
 		try
 		{
-			log.info("[WikiAssistantService] answerFromWikiSearch start");
+			log.info("[WikiAssistantService] answerFromWikiWithAi start");
 			String searchUrl = WIKI_BASE + "/api.php?action=query&list=search&srsearch="
 				+ URLEncoder.encode(question, StandardCharsets.UTF_8)
-				+ "&format=json&srlimit=3";
+				+ "&format=json&srlimit=5";
 
 			JsonObject searchJson = getJson(searchUrl);
 			JsonArray results = searchJson.getAsJsonObject("query").getAsJsonArray("search");
 			if (results.size() == 0)
 			{
-				log.info("[WikiAssistantService] no wiki results");
 				return "No wiki results found for that question.";
 			}
 
-			log.info("[WikiAssistantService] wiki results count={}", results.size());
-
-			StringBuilder out = new StringBuilder();
-			out.append("Wiki-grounded results:\n\n");
-
-			for (int i = 0; i < Math.min(3, results.size()); i++)
+			StringBuilder sources = new StringBuilder();
+			for (int i = 0; i < Math.min(5, results.size()); i++)
 			{
 				JsonObject r = results.get(i).getAsJsonObject();
 				String title = r.get("title").getAsString();
@@ -171,21 +169,24 @@ public class WikiAssistantService
 					.replace("</span>", "")
 					.replace("&quot;", "\"");
 				String pageUrl = WIKI_BASE + "/w/" + title.replace(' ', '_');
-
-				out.append(String.format("%d) %s\n", i + 1, title))
-					.append(snippet).append("\n")
-					.append(pageUrl).append("\n\n");
+				sources.append("- ").append(title).append("\n")
+					.append("  ").append(snippet).append("\n")
+					.append("  ").append(pageUrl).append("\n");
 			}
 
-			out.append("I can do stronger calculations when the query references in-game context (bank/inventory/skills).\n")
-				.append("Source of truth: https://oldschool.runescape.wiki/");
-			log.info("[WikiAssistantService] wiki answer built");
-			return out.toString();
+			if (config.apiKey() == null || config.apiKey().isBlank())
+			{
+				return "AI mode is enabled, but no API key is configured.\n\n"
+					+ "Set Wiki Assistant config -> API key, then ask again.\n\nTop wiki sources:\n"
+					+ sources;
+			}
+
+			return askModel(question, sources.toString());
 		}
 		catch (Exception e)
 		{
-			log.error("Wiki search failed", e);
-			return "Failed to query OSRS Wiki right now. Try again.";
+			log.error("Wiki+AI failed", e);
+			return "Failed to query wiki/AI right now: " + e.getMessage();
 		}
 	}
 
@@ -309,6 +310,59 @@ public class WikiAssistantService
 			+ "3) ‘How do I start [quest name] and what are requirements?’\n"
 			+ "4) ‘Compare X vs Y training methods for [skill]’\n\n"
 			+ "Source of truth: https://oldschool.runescape.wiki/";
+	}
+
+	private String askModel(String question, String sources) throws Exception
+	{
+		JsonObject body = new JsonObject();
+		body.addProperty("model", config.model());
+
+		JsonArray messages = new JsonArray();
+		JsonObject system = new JsonObject();
+		system.addProperty("role", "system");
+		system.addProperty("content", "You are an OSRS assistant. Answer only from the provided OSRS Wiki snippets and links. If uncertain, say so. Keep answer concise and include a Sources section with the links you used.");
+		messages.add(system);
+
+		JsonObject user = new JsonObject();
+		user.addProperty("role", "user");
+		user.addProperty("content", "Question: " + question + "\n\nWiki sources:\n" + sources);
+		messages.add(user);
+
+		body.add("messages", messages);
+		body.addProperty("temperature", 0.2);
+
+		JsonObject resp = postJson(config.apiBase(), body, config.apiKey());
+		JsonArray choices = resp.getAsJsonArray("choices");
+		if (choices == null || choices.size() == 0)
+		{
+			return "Model returned no answer.\n\nSources:\n" + sources;
+		}
+
+		JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+		String content = msg.get("content").getAsString();
+		return content + "\n\nSource of truth: https://oldschool.runescape.wiki/";
+	}
+
+	private static JsonObject postJson(String url, JsonObject payload, String apiKey) throws Exception
+	{
+		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+		conn.setRequestMethod("POST");
+		conn.setRequestProperty("Content-Type", "application/json");
+		conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+		conn.setRequestProperty("User-Agent", "RuneLite-WikiAssistant-MVP");
+		conn.setDoOutput(true);
+		conn.setConnectTimeout(10000);
+		conn.setReadTimeout(20000);
+
+		byte[] out = payload.toString().getBytes(StandardCharsets.UTF_8);
+		conn.getOutputStream().write(out);
+
+		try (BufferedReader in = new BufferedReader(new InputStreamReader(
+			(conn.getResponseCode() >= 400 ? conn.getErrorStream() : conn.getInputStream()), StandardCharsets.UTF_8)))
+		{
+			String body = in.lines().collect(Collectors.joining("\n"));
+			return JsonParser.parseString(body).getAsJsonObject();
+		}
 	}
 
 	private static JsonObject getJson(String url) throws Exception
