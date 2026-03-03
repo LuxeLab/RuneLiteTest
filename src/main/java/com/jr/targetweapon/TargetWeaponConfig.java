@@ -26,4 +26,24 @@ public interface TargetWeaponConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "autoThickSkinOnWeapon",
+		name = "Auto Thick Skin on weapon",
+		description = "Turn on Thick Skin if target equips trigger weapon ID"
+	)
+	default boolean autoThickSkinOnWeapon()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "triggerWeaponId",
+		name = "Trigger weapon ID",
+		description = "Normalized weapon item ID that triggers Thick Skin"
+	)
+	default int triggerWeaponId()
+	{
+		return 1387;
+	}
 }

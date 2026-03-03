@@ -10,10 +10,13 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.MenuAction;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
+import net.runelite.api.Prayer;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.kit.KitType;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -35,6 +38,9 @@ public class TargetWeaponPlugin extends Plugin
 	private TargetWeaponConfig config;
 
 	@Inject
+	private ClientThread clientThread;
+
+	@Inject
 	private OverlayManager overlayManager;
 
 	@Inject
@@ -42,6 +48,7 @@ public class TargetWeaponPlugin extends Plugin
 
 	private final Deque<String> recentLogLines = new ArrayDeque<>();
 	private static final int MAX_LINES = 8;
+	private static final int THICK_SKIN_WIDGET_ID = 35454985; // captured from prayer trace logger
 
 	private String lastTargetName;
 	private int lastWeaponId = Integer.MIN_VALUE;
@@ -115,6 +122,11 @@ public class TargetWeaponPlugin extends Plugin
 			);
 		}
 
+		if (changed && config.autoThickSkinOnWeapon() && normalizedWeaponId == config.triggerWeaponId())
+		{
+			clientThread.invoke(this::activateThickSkinIfNeeded);
+		}
+
 		lastTargetName = targetName;
 		lastWeaponId = normalizedWeaponId;
 	}
@@ -139,6 +151,34 @@ public class TargetWeaponPlugin extends Plugin
 	private static String safe(String s)
 	{
 		return s == null ? "" : s;
+	}
+
+	private void activateThickSkinIfNeeded()
+	{
+		if (client.getGameState() != GameState.LOGGED_IN)
+		{
+			return;
+		}
+		if (client.getBoostedSkillLevel(net.runelite.api.Skill.PRAYER) <= 0)
+		{
+			return;
+		}
+		if (client.isPrayerActive(Prayer.THICK_SKIN))
+		{
+			return;
+		}
+
+		client.menuAction(
+			-1,
+			THICK_SKIN_WIDGET_ID,
+			MenuAction.CC_OP,
+			1,
+			0,
+			"Activate",
+			"Thick Skin"
+		);
+		addLine("Auto: Thick Skin ON");
+		log.info("[TARGET] Trigger weapon detected ({}), requested Thick Skin activate", config.triggerWeaponId());
 	}
 
 	private void addLine(String line)
