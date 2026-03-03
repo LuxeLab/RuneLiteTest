@@ -9,10 +9,18 @@ import java.net.HttpURLConnection;
 import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -34,6 +42,7 @@ import net.runelite.client.game.ItemManager;
 public class WikiAssistantService
 {
 	private static final String WIKI_BASE = "https://oldschool.runescape.wiki";
+	private static final Path EVAL_LOG_PATH = Path.of(System.getProperty("user.home"), ".runelite", "wikiassistant-evals.jsonl");
 
 	@Inject
 	private Client client;
@@ -48,6 +57,8 @@ public class WikiAssistantService
 	private WikiAssistantConfig config;
 
 	private static final Map<Integer, Double> COOKING_XP = new HashMap<>();
+	private static final Map<String, double[]> MODEL_PRICES_PER_M = new HashMap<>();
+
 	static
 	{
 		// MVP subset, sourced from OSRS Wiki values.
@@ -64,6 +75,11 @@ public class WikiAssistantService
 		COOKING_XP.put(ItemID.RAW_SHARK, 210.0);
 		COOKING_XP.put(ItemID.RAW_SEA_TURTLE, 211.3);
 		COOKING_XP.put(ItemID.RAW_MANTA_RAY, 216.3);
+
+		// Estimated $ / 1M tokens: [input, output]. Update as provider prices change.
+		MODEL_PRICES_PER_M.put("openai/gpt-4o-mini", new double[]{0.15, 0.60});
+		MODEL_PRICES_PER_M.put("google/gemini-2.0-flash-001", new double[]{0.10, 0.40});
+		MODEL_PRICES_PER_M.put("anthropic/claude-3.5-haiku", new double[]{0.80, 4.00});
 	}
 
 	public String answer(String question)
@@ -82,18 +98,15 @@ public class WikiAssistantService
 			return answerCookingProjection();
 		}
 
-		log.info("[WikiAssistantService] routing to wiki+ai");
-		return answerFromWikiWithAi(question);
+		log.info("[WikiAssistantService] routing to wiki+ai parallel eval");
+		return answerFromWikiWithAiParallel(question);
 	}
 
 	private String answerCookingProjection()
 	{
-		log.info("[WikiAssistantService] answerCookingProjection() start");
-
 		final Item[] bankItems = getBankItemsSnapshot();
 		if (bankItems == null)
 		{
-			log.info("[WikiAssistantService] bank container is null");
 			return "Open your bank first so I can read raw food quantities.";
 		}
 
@@ -120,7 +133,6 @@ public class WikiAssistantService
 
 		if (totalXp <= 0)
 		{
-			log.info("[WikiAssistantService] no cookable foods found in bank subset");
 			return "I couldn't find recognized raw cookable foods in your bank (MVP list).";
 		}
 
@@ -129,64 +141,214 @@ public class WikiAssistantService
 		double projectedXp = currentXp + totalXp;
 		int projectedLevel = Experience.getLevelForXp((int) projectedXp);
 
-		StringBuilder out = new StringBuilder();
-		out.append("Cooking projection (bank raw foods)\n\n")
+		return new StringBuilder()
+			.append("Cooking projection (bank raw foods)\n\n")
 			.append(String.format("Current: level %d (%d xp)%n", currentLevel, currentXp))
 			.append(String.format("Potential gain: %.1f xp%n", totalXp))
 			.append(String.format("Projected: level %d (%d xp)%n%n", projectedLevel, (int) projectedXp))
 			.append("Breakdown:\n")
 			.append(breakdown)
 			.append("\nSource: OSRS Wiki cooking xp values (MVP subset) + live bank data from RuneLite.\n")
-			.append("Wiki: https://oldschool.runescape.wiki/w/Cooking");
-
-		log.info("[WikiAssistantService] cooking projection complete totalXp={} projectedLevel={}", totalXp, projectedLevel);
-		return out.toString();
+			.append("Wiki: https://oldschool.runescape.wiki/w/Cooking")
+			.toString();
 	}
 
-	private String answerFromWikiWithAi(String question)
+	private String answerFromWikiWithAiParallel(String question)
 	{
 		try
 		{
-			log.info("[WikiAssistantService] answerFromWikiWithAi start");
-			String searchUrl = WIKI_BASE + "/api.php?action=query&list=search&srsearch="
-				+ URLEncoder.encode(question, StandardCharsets.UTF_8)
-				+ "&format=json&srlimit=5";
-
-			JsonObject searchJson = getJson(searchUrl);
-			JsonArray results = searchJson.getAsJsonObject("query").getAsJsonArray("search");
-			if (results.size() == 0)
+			String sources = buildWikiSources(question);
+			if (sources == null)
 			{
 				return "No wiki results found for that question.";
 			}
 
-			StringBuilder sources = new StringBuilder();
-			for (int i = 0; i < Math.min(5, results.size()); i++)
-			{
-				JsonObject r = results.get(i).getAsJsonObject();
-				String title = r.get("title").getAsString();
-				String snippet = r.get("snippet").getAsString()
-					.replace("<span class=\"searchmatch\">", "")
-					.replace("</span>", "")
-					.replace("&quot;", "\"");
-				String pageUrl = WIKI_BASE + "/w/" + title.replace(' ', '_');
-				sources.append("- ").append(title).append("\n")
-					.append("  ").append(snippet).append("\n")
-					.append("  ").append(pageUrl).append("\n");
-			}
-
 			if (config.apiKey() == null || config.apiKey().isBlank())
 			{
-				return "AI mode is enabled, but no API key is configured.\n\n"
-					+ "Set Wiki Assistant config -> API key, then ask again.\n\nTop wiki sources:\n"
-					+ sources;
+				return "AI mode needs an API key in Wiki Assistant config.\n\nTop wiki sources:\n" + sources;
 			}
 
-			return askModel(question, sources.toString());
+			String[] models = new String[]{config.modelA(), config.modelB(), config.modelC()};
+			ExecutorService pool = Executors.newFixedThreadPool(3);
+			try
+			{
+				Future<ModelResult>[] futures = new Future[3];
+				for (int i = 0; i < 3; i++)
+				{
+					final String m = models[i];
+					futures[i] = pool.submit((Callable<ModelResult>) () -> askModel(m, question, sources));
+				}
+
+				ModelResult[] results = new ModelResult[3];
+				for (int i = 0; i < 3; i++)
+				{
+					results[i] = futures[i].get(45, TimeUnit.SECONDS);
+					appendEvalLog(results[i]);
+				}
+
+				return renderParallelResults(question, results);
+			}
+			finally
+			{
+				pool.shutdownNow();
+			}
 		}
 		catch (Exception e)
 		{
-			log.error("Wiki+AI failed", e);
-			return "Failed to query wiki/AI right now: " + e.getMessage();
+			log.error("Wiki+AI parallel failed", e);
+			return "Failed to query wiki/AI right now: " + e.getClass().getSimpleName() + " - " + e.getMessage();
+		}
+	}
+
+	private String buildWikiSources(String question) throws Exception
+	{
+		String searchUrl = WIKI_BASE + "/api.php?action=query&list=search&srsearch="
+			+ URLEncoder.encode(question, StandardCharsets.UTF_8)
+			+ "&format=json&srlimit=5";
+
+		JsonObject searchJson = getJson(searchUrl);
+		JsonArray results = searchJson.getAsJsonObject("query").getAsJsonArray("search");
+		if (results == null || results.size() == 0)
+		{
+			return null;
+		}
+
+		StringBuilder sources = new StringBuilder();
+		for (int i = 0; i < Math.min(5, results.size()); i++)
+		{
+			JsonObject r = results.get(i).getAsJsonObject();
+			String title = r.get("title").getAsString();
+			String snippet = r.get("snippet").getAsString()
+				.replace("<span class=\"searchmatch\">", "")
+				.replace("</span>", "")
+				.replace("&quot;", "\"");
+			String pageUrl = WIKI_BASE + "/w/" + title.replace(' ', '_');
+			sources.append("- ").append(title).append("\n")
+				.append("  ").append(snippet).append("\n")
+				.append("  ").append(pageUrl).append("\n");
+		}
+		return sources.toString();
+	}
+
+	private ModelResult askModel(String model, String question, String sources) throws Exception
+	{
+		long start = System.currentTimeMillis();
+
+		JsonObject body = new JsonObject();
+		body.addProperty("model", model);
+
+		JsonArray messages = new JsonArray();
+		JsonObject system = new JsonObject();
+		system.addProperty("role", "system");
+		system.addProperty("content", "You are an OSRS assistant. Answer only from the provided OSRS Wiki snippets and links. If uncertain, say so. Keep answer concise and include a Sources section with links used.");
+		messages.add(system);
+
+		JsonObject user = new JsonObject();
+		user.addProperty("role", "user");
+		user.addProperty("content", "Question: " + question + "\n\nWiki sources:\n" + sources);
+		messages.add(user);
+
+		body.add("messages", messages);
+		body.addProperty("temperature", 0.2);
+
+		JsonObject resp = postJson(config.apiBase(), body, config.apiKey());
+		long ms = System.currentTimeMillis() - start;
+
+		ModelResult r = new ModelResult();
+		r.timestamp = Instant.now().toString();
+		r.model = model;
+		r.question = question;
+		r.sources = sources;
+		r.latencyMs = ms;
+
+		JsonArray choices = resp.getAsJsonArray("choices");
+		if (choices == null || choices.size() == 0)
+		{
+			r.answer = "Model returned no answer.";
+		}
+		else
+		{
+			JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+			r.answer = msg.get("content").getAsString();
+		}
+
+		JsonObject usage = resp.getAsJsonObject("usage");
+		if (usage != null)
+		{
+			r.promptTokens = usage.has("prompt_tokens") ? usage.get("prompt_tokens").getAsInt() : 0;
+			r.completionTokens = usage.has("completion_tokens") ? usage.get("completion_tokens").getAsInt() : 0;
+			r.totalTokens = usage.has("total_tokens") ? usage.get("total_tokens").getAsInt() : (r.promptTokens + r.completionTokens);
+		}
+
+		r.estimatedCostUsd = estimateCostUsd(model, r.promptTokens, r.completionTokens);
+		return r;
+	}
+
+	private String renderParallelResults(String question, ModelResult[] results)
+	{
+		StringBuilder out = new StringBuilder();
+		out.append("Parallel model outputs (for evaluation)\n")
+			.append("Question: ").append(question).append("\n\n");
+
+		for (int i = 0; i < results.length; i++)
+		{
+			ModelResult r = results[i];
+			out.append("=== Model ").append(i + 1).append(": ").append(r.model).append(" ===\n")
+				.append("Latency: ").append(r.latencyMs).append(" ms\n")
+				.append("Tokens: prompt=").append(r.promptTokens)
+				.append(", completion=").append(r.completionTokens)
+				.append(", total=").append(r.totalTokens).append("\n")
+				.append("Estimated cost: ")
+				.append(r.estimatedCostUsd >= 0 ? String.format("$%.6f", r.estimatedCostUsd) : "unknown")
+				.append("\n\n")
+				.append(r.answer == null ? "(no answer)" : r.answer)
+				.append("\n\n");
+		}
+
+		out.append("All inputs/outputs logged to: ").append(EVAL_LOG_PATH).append("\n")
+			.append("Source of truth: https://oldschool.runescape.wiki/");
+		return out.toString();
+	}
+
+	private static double estimateCostUsd(String model, int promptTokens, int completionTokens)
+	{
+		double[] rates = MODEL_PRICES_PER_M.get(model);
+		if (rates == null)
+		{
+			return -1;
+		}
+		double inputCost = (promptTokens / 1_000_000.0) * rates[0];
+		double outputCost = (completionTokens / 1_000_000.0) * rates[1];
+		return inputCost + outputCost;
+	}
+
+	private static synchronized void appendEvalLog(ModelResult r)
+	{
+		try
+		{
+			Files.createDirectories(EVAL_LOG_PATH.getParent());
+			JsonObject j = new JsonObject();
+			j.addProperty("timestamp", r.timestamp);
+			j.addProperty("model", r.model);
+			j.addProperty("question", r.question);
+			j.addProperty("sources", r.sources);
+			j.addProperty("answer", r.answer);
+			j.addProperty("latencyMs", r.latencyMs);
+			j.addProperty("promptTokens", r.promptTokens);
+			j.addProperty("completionTokens", r.completionTokens);
+			j.addProperty("totalTokens", r.totalTokens);
+			j.addProperty("estimatedCostUsd", r.estimatedCostUsd);
+
+			Files.writeString(
+				EVAL_LOG_PATH,
+				j.toString() + System.lineSeparator(),
+				StandardOpenOption.CREATE,
+				StandardOpenOption.APPEND
+			);
+		}
+		catch (Exception e)
+		{
+			log.error("Failed writing eval log", e);
 		}
 	}
 
@@ -212,7 +374,6 @@ public class WikiAssistantService
 		{
 			if (!latch.await(3, TimeUnit.SECONDS))
 			{
-				log.warn("Timed out reading bank snapshot on client thread");
 				return null;
 			}
 		}
@@ -298,49 +459,13 @@ public class WikiAssistantService
 
 	private String capabilityHelpText()
 	{
-		return "I’m best at wiki-grounded OSRS answers + live account context.\n\n"
-			+ "What I can do right now:\n"
-			+ "• Cooking projection from your bank raw foods\n"
-			+ "• Explain quests, items, bosses, skilling methods from OSRS Wiki\n"
-			+ "• Compare methods and summarize wiki pages with links\n"
-			+ "• Use your current in-game context (skills/inventory/bank when available)\n\n"
-			+ "Best question formats:\n"
-			+ "1) ‘What cooking level can I reach with raw food in my bank?’\n"
-			+ "2) ‘What are good money makers for my stats?’\n"
-			+ "3) ‘How do I start [quest name] and what are requirements?’\n"
-			+ "4) ‘Compare X vs Y training methods for [skill]’\n\n"
+		return "I run 3 models in parallel and show all outputs for evaluation.\n\n"
+			+ "I can:\n"
+			+ "• Answer OSRS questions grounded in OSRS Wiki sources\n"
+			+ "• Use live RuneLite context for calculations (bank/skills)\n"
+			+ "• Log inputs/outputs, token usage, latency, and estimated cost per model\n\n"
+			+ "Eval log path: " + EVAL_LOG_PATH + "\n"
 			+ "Source of truth: https://oldschool.runescape.wiki/";
-	}
-
-	private String askModel(String question, String sources) throws Exception
-	{
-		JsonObject body = new JsonObject();
-		body.addProperty("model", config.model());
-
-		JsonArray messages = new JsonArray();
-		JsonObject system = new JsonObject();
-		system.addProperty("role", "system");
-		system.addProperty("content", "You are an OSRS assistant. Answer only from the provided OSRS Wiki snippets and links. If uncertain, say so. Keep answer concise and include a Sources section with the links you used.");
-		messages.add(system);
-
-		JsonObject user = new JsonObject();
-		user.addProperty("role", "user");
-		user.addProperty("content", "Question: " + question + "\n\nWiki sources:\n" + sources);
-		messages.add(user);
-
-		body.add("messages", messages);
-		body.addProperty("temperature", 0.2);
-
-		JsonObject resp = postJson(config.apiBase(), body, config.apiKey());
-		JsonArray choices = resp.getAsJsonArray("choices");
-		if (choices == null || choices.size() == 0)
-		{
-			return "Model returned no answer.\n\nSources:\n" + sources;
-		}
-
-		JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
-		String content = msg.get("content").getAsString();
-		return content + "\n\nSource of truth: https://oldschool.runescape.wiki/";
 	}
 
 	private static JsonObject postJson(String url, JsonObject payload, String apiKey) throws Exception
@@ -352,7 +477,7 @@ public class WikiAssistantService
 		conn.setRequestProperty("User-Agent", "RuneLite-WikiAssistant-MVP");
 		conn.setDoOutput(true);
 		conn.setConnectTimeout(10000);
-		conn.setReadTimeout(20000);
+		conn.setReadTimeout(45000);
 
 		byte[] out = payload.toString().getBytes(StandardCharsets.UTF_8);
 		conn.getOutputStream().write(out);
@@ -378,5 +503,19 @@ public class WikiAssistantService
 			String body = in.lines().collect(Collectors.joining("\n"));
 			return JsonParser.parseString(body).getAsJsonObject();
 		}
+	}
+
+	private static class ModelResult
+	{
+		String timestamp;
+		String model;
+		String question;
+		String sources;
+		String answer;
+		long latencyMs;
+		int promptTokens;
+		int completionTokens;
+		int totalTokens;
+		double estimatedCostUsd;
 	}
 }

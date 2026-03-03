@@ -28,12 +28,32 @@ public interface WikiAssistantConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "model",
-		name = "Model",
-		description = "Model id, e.g. openrouter/auto"
+		keyName = "modelA",
+		name = "Model A",
+		description = "First model for parallel eval"
 	)
-	default String model()
+	default String modelA()
 	{
-		return "openrouter/auto";
+		return "openai/gpt-4o-mini";
+	}
+
+	@ConfigItem(
+		keyName = "modelB",
+		name = "Model B",
+		description = "Second model for parallel eval"
+	)
+	default String modelB()
+	{
+		return "google/gemini-2.0-flash-001";
+	}
+
+	@ConfigItem(
+		keyName = "modelC",
+		name = "Model C",
+		description = "Third model for parallel eval"
+	)
+	default String modelC()
+	{
+		return "anthropic/claude-3.5-haiku";
 	}
 }
