@@ -99,7 +99,8 @@ public class WikiAssistantService
 	public String answer(String question)
 	{
 		log.info("[WikiAssistantService] answer() question={}", question);
-		String q = question.toLowerCase(Locale.ROOT).trim();
+		String normalizedQuestion = normalizeQuestion(question);
+		String q = normalizedQuestion.toLowerCase(Locale.ROOT).trim();
 
 		if (isCapabilityQuestion(q))
 		{
@@ -118,7 +119,7 @@ public class WikiAssistantService
 		}
 
 		log.info("[WikiAssistantService] routing to wiki+ai parallel eval");
-		return answerFromWikiWithAiParallel(question);
+		return answerFromWikiWithAiParallel(question, normalizedQuestion);
 	}
 
 	private String answerCookingProjection()
@@ -172,11 +173,11 @@ public class WikiAssistantService
 			.toString();
 	}
 
-	private String answerFromWikiWithAiParallel(String question)
+	private String answerFromWikiWithAiParallel(String originalQuestion, String normalizedQuestion)
 	{
 		try
 		{
-			String sources = buildWikiSources(question);
+			String sources = buildWikiSources(normalizedQuestion);
 			if (sources == null)
 			{
 				return "No wiki results found for that question.";
@@ -195,7 +196,7 @@ public class WikiAssistantService
 				for (int i = 0; i < 3; i++)
 				{
 					final String m = models[i];
-					futures[i] = pool.submit((Callable<ModelResult>) () -> askModel(m, question, sources));
+					futures[i] = pool.submit((Callable<ModelResult>) () -> askModel(m, originalQuestion, normalizedQuestion, sources));
 				}
 
 				ModelResult[] results = new ModelResult[3];
@@ -205,7 +206,7 @@ public class WikiAssistantService
 					appendEvalLog(results[i]);
 				}
 
-				return renderParallelResults(question, results);
+				return renderParallelResults(originalQuestion, normalizedQuestion, results);
 			}
 			finally
 			{
@@ -259,7 +260,7 @@ public class WikiAssistantService
 		return "WorldPoint=" + wp.getX() + "," + wp.getY() + ",plane=" + wp.getPlane() + "; area=" + resolveAreaName(wp);
 	}
 
-	private ModelResult askModel(String model, String question, String sources) throws Exception
+	private ModelResult askModel(String model, String originalQuestion, String normalizedQuestion, String sources) throws Exception
 	{
 		long start = System.currentTimeMillis();
 
@@ -274,7 +275,9 @@ public class WikiAssistantService
 
 		JsonObject user = new JsonObject();
 		user.addProperty("role", "user");
-		user.addProperty("content", "Question: " + question + "\n\nLive RuneLite context:\n" + buildLiveContext() + "\n\nWiki sources:\n" + sources);
+		user.addProperty("content", "Original question: " + originalQuestion + "\n"
+			+ "Normalized question: " + normalizedQuestion + "\n\n"
+			+ "Live RuneLite context:\n" + buildLiveContext() + "\n\nWiki sources:\n" + sources);
 		messages.add(user);
 
 		body.add("messages", messages);
@@ -286,7 +289,8 @@ public class WikiAssistantService
 		ModelResult r = new ModelResult();
 		r.timestamp = Instant.now().toString();
 		r.model = model;
-		r.question = question;
+		r.question = originalQuestion;
+		r.normalizedQuestion = normalizedQuestion;
 		r.sources = sources;
 		r.latencyMs = ms;
 
@@ -313,11 +317,12 @@ public class WikiAssistantService
 		return r;
 	}
 
-	private String renderParallelResults(String question, ModelResult[] results)
+	private String renderParallelResults(String originalQuestion, String normalizedQuestion, ModelResult[] results)
 	{
 		StringBuilder out = new StringBuilder();
 		out.append("Parallel model outputs (for evaluation)\n")
-			.append("Question: ").append(question).append("\n\n");
+			.append("Original question: ").append(originalQuestion).append("\n")
+			.append("Normalized question: ").append(normalizedQuestion).append("\n\n");
 
 		for (int i = 0; i < results.length; i++)
 		{
@@ -360,6 +365,7 @@ public class WikiAssistantService
 			j.addProperty("timestamp", r.timestamp);
 			j.addProperty("model", r.model);
 			j.addProperty("question", r.question);
+			j.addProperty("normalizedQuestion", r.normalizedQuestion);
 			j.addProperty("sources", r.sources);
 			j.addProperty("answer", r.answer);
 			j.addProperty("latencyMs", r.latencyMs);
@@ -521,6 +527,29 @@ public class WikiAssistantService
 		return xp.get();
 	}
 
+	private String normalizeQuestion(String question)
+	{
+		if (question == null)
+		{
+			return "";
+		}
+
+		String q = question.trim().toLowerCase(Locale.ROOT);
+		q = q.replaceAll("\\bdef\\b", "defence");
+		q = q.replaceAll("\\blvl\\b", "level");
+		q = q.replaceAll("\\breq\\b", "required");
+		q = q.replaceAll("\\bdfs\\b", "dragonfire shield");
+		q = q.replaceAll("\\bstr\\b", "strength");
+		q = q.replaceAll("\\batt\\b", "attack");
+
+		if (q.matches(".*what\\s+defence\\s+level.*dragonfire shield.*") || q.matches(".*dragonfire shield.*defence.*level.*"))
+		{
+			return "What defence level is required to equip Dragonfire shield?";
+		}
+
+		return q;
+	}
+
 	private boolean isCapabilityQuestion(String q)
 	{
 		return q.equals("what can you help me with")
@@ -636,6 +665,7 @@ public class WikiAssistantService
 		String timestamp;
 		String model;
 		String question;
+		String normalizedQuestion;
 		String sources;
 		String answer;
 		long latencyMs;
