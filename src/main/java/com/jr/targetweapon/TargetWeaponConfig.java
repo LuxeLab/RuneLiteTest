@@ -16,4 +16,14 @@ public interface TargetWeaponConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "showOverlay",
+		name = "Show overlay",
+		description = "Display recent target weapon logs in overlay"
+	)
+	default boolean showOverlay()
+	{
+		return true;
+	}
 }

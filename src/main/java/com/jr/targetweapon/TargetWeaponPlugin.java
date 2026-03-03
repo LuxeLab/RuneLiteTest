@@ -1,6 +1,10 @@
 package com.jr.targetweapon;
 
 import com.google.inject.Provides;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -14,6 +18,7 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.overlay.OverlayManager;
 
 @Slf4j
 @PluginDescriptor(
@@ -29,6 +34,15 @@ public class TargetWeaponPlugin extends Plugin
 	@Inject
 	private TargetWeaponConfig config;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private TargetWeaponOverlay overlay;
+
+	private final Deque<String> recentLogLines = new ArrayDeque<>();
+	private static final int MAX_LINES = 8;
+
 	private String lastTargetName;
 	private int lastWeaponId = Integer.MIN_VALUE;
 
@@ -43,12 +57,18 @@ public class TargetWeaponPlugin extends Plugin
 	{
 		lastTargetName = null;
 		lastWeaponId = Integer.MIN_VALUE;
+		recentLogLines.clear();
+		if (config.showOverlay())
+		{
+			overlayManager.add(overlay);
+		}
 		log.info("Target Weapon ID plugin started");
 	}
 
 	@Override
 	protected void shutDown()
 	{
+		overlayManager.remove(overlay);
 		log.info("Target Weapon ID plugin stopped");
 	}
 
@@ -84,6 +104,8 @@ public class TargetWeaponPlugin extends Plugin
 		boolean changed = !targetName.equals(lastTargetName) || normalizedWeaponId != lastWeaponId;
 		if (!config.logOnlyOnChange() || changed)
 		{
+			String line = String.format("%s | wpn=%d", targetName, normalizedWeaponId);
+			addLine(line);
 			log.info("[TARGET] name='{}' combat={} rawWeaponId={} weaponItemId={} tick={}",
 				targetName,
 				target.getCombatLevel(),
@@ -117,5 +139,19 @@ public class TargetWeaponPlugin extends Plugin
 	private static String safe(String s)
 	{
 		return s == null ? "" : s;
+	}
+
+	private void addLine(String line)
+	{
+		recentLogLines.addFirst(line);
+		while (recentLogLines.size() > MAX_LINES)
+		{
+			recentLogLines.removeLast();
+		}
+	}
+
+	List<String> getRecentLogLines()
+	{
+		return new ArrayList<>(recentLogLines);
 	}
 }
