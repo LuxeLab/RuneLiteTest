@@ -10,7 +10,9 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -197,16 +199,16 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		if (config.enablePvpOne() && config.profileOneToggleKey().matches(e))
 		{
 			logStep("Profile One hotkey pressed");
-			clientThread.invoke(this::runProfileOne);
+			new Thread(this::runProfileOneAsync, "pvphelpr-profile1").start();
 		}
 	}
 
 	@Override public void keyTyped(KeyEvent e) {}
 	@Override public void keyReleased(KeyEvent e) {}
 
-	private void runProfileOne()
+	private void runProfileOneAsync()
 	{
-		if (client.getGameState() != GameState.LOGGED_IN)
+		if (!runClientStep(() -> client.getGameState() == GameState.LOGGED_IN, "check-login"))
 		{
 			logStep("Profile One aborted: not logged in");
 			return;
@@ -214,28 +216,55 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 		logStep("Profile One start");
 
-		equipItemsFromInventory(config.gearToEquip());
-		enablePrayers(config.prayersToEnable());
-		selectSpell(config.spellToCast());
+		randomDelay("equip-phase");
+		runClientStep(() ->
+		{
+			equipItemsFromInventory(config.gearToEquip());
+			return true;
+		}, "equip-items");
+
+		randomDelay("prayer-phase");
+		runClientStep(() ->
+		{
+			enablePrayers(config.prayersToEnable());
+			return true;
+		}, "enable-prayers");
+
+		randomDelay("spell-phase");
+		runClientStep(() ->
+		{
+			selectSpell(config.spellToCast());
+			return true;
+		}, "select-spell");
 
 		if (config.attackTarget())
 		{
-			if (config.spellToCast() != null && config.spellToCast() != PvpHelprSpell.NONE)
+			randomDelay("attack-phase");
+			runClientStep(() ->
 			{
-				pendingCastOnTarget = true;
-				pendingCastOnTargetTick = client.getTickCount() + 1;
-				logStep("Queued cast-on-target for next tick");
-			}
-			else if (!castSelectedSpellOnCurrentTarget())
-			{
-				attackCurrentTarget();
-			}
+				if (config.spellToCast() != null && config.spellToCast() != PvpHelprSpell.NONE)
+				{
+					pendingCastOnTarget = true;
+					pendingCastOnTargetTick = client.getTickCount() + 1;
+					logStep("Queued cast-on-target for next tick");
+				}
+				else if (!castSelectedSpellOnCurrentTarget())
+				{
+					attackCurrentTarget();
+				}
+				return true;
+			}, "attack-target");
 		}
 
 		if (config.enableReverseSwapGear())
 		{
 			logStep("Reverse swap enabled");
-			equipItemsFromInventory(config.reverseSwapGear());
+			randomDelay("reverse-swap-phase");
+			runClientStep(() ->
+			{
+				equipItemsFromInventory(config.reverseSwapGear());
+				return true;
+			}, "reverse-swap");
 		}
 
 		logStep("Profile One complete");
@@ -278,7 +307,6 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 					firstInvAction = invActions[0];
 				}
 				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot + " firstAction=" + firstInvAction);
-				applyActionDelay("equip:" + wantedId);
 
 				if (!firstInvAction.isBlank() && !firstInvAction.equalsIgnoreCase("Drop"))
 				{
@@ -345,7 +373,6 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			logStep("Prayer widget not found for " + prayerLabel(prayer) + " (openTab=" + openPrayerTabFirst + ")");
 			return;
 		}
-		applyActionDelay("prayer:" + prayerLabel(prayer));
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(prayer));
 		logStep("Prayer action sent: " + prayerLabel(prayer));
 	}
@@ -372,7 +399,6 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		applyActionDelay("spellSelect:" + spell.label());
 		client.menuAction(-1, spellWidget.getId(), MenuAction.WIDGET_TARGET, 0, -1, "Cast", spell.label());
 		logStep("Spell cast action sent: " + spell.label() + " widgetId=" + spellWidget.getId() + " action=WIDGET_TARGET");
 
@@ -432,7 +458,6 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 
 		Player target = (Player) interacting;
-		applyActionDelay("castOnTarget:" + safe(target.getName()));
 		client.menuAction(0, 0, MenuAction.WIDGET_TARGET_ON_PLAYER, target.getId(), 0, "Cast", safe(target.getName()));
 		logStep("Cast-on-target action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
 		return true;
@@ -453,7 +478,6 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 
 		Player target = (Player) interacting;
-		applyActionDelay("attack:" + safe(target.getName()));
 		client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, target.getId(), 0, "Attack", safe(target.getName()));
 		logStep("Attack action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
 	}
@@ -672,17 +696,17 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 	}
 
-	private void applyActionDelay(String actionLabel)
+	private void randomDelay(String phase)
 	{
 		int min = Math.max(0, config.actionDelayMinMs());
 		int max = Math.max(0, config.actionDelayMaxMs());
 		if (max < min)
 		{
-			int tmp = min;
+			int t = min;
 			min = max;
-			max = tmp;
+			max = t;
 		}
-		if (max == 0)
+		if (max <= 0)
 		{
 			return;
 		}
@@ -691,7 +715,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			return;
 		}
-		logStep("Delay " + delay + "ms before " + actionLabel);
+		logStep("Delay " + delay + "ms before " + phase);
 		try
 		{
 			Thread.sleep(delay);
@@ -700,6 +724,42 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			Thread.currentThread().interrupt();
 		}
+	}
+
+	private boolean runClientStep(java.util.concurrent.Callable<Boolean> step, String stepName)
+	{
+		CountDownLatch latch = new CountDownLatch(1);
+		final boolean[] ok = new boolean[]{false};
+		clientThread.invoke(() ->
+		{
+			try
+			{
+				ok[0] = step.call();
+			}
+			catch (Exception e)
+			{
+				logStep("Step failed: " + stepName + " -> " + e.getClass().getSimpleName());
+			}
+			finally
+			{
+				latch.countDown();
+			}
+		});
+
+		try
+		{
+			if (!latch.await(5, TimeUnit.SECONDS))
+			{
+				logStep("Step timeout: " + stepName);
+				return false;
+			}
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+			return false;
+		}
+		return ok[0];
 	}
 
 	List<String> getOverlayLines()
