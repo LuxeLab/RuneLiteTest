@@ -831,9 +831,9 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	{
 		ArrayList<String> lines = new ArrayList<>();
 		lines.add("Target: " + currentTargetDisplay);
+		lines.add("Defensive Prayer Switching: " + (defensiveEnabled ? "ENABLED" : "DISABLED"));
 		lines.add("Source: " + targetSourceDisplay);
 		lines.add("Sticky: " + (stickyTargetId == -1 ? "none" : (stickyTargetName + " (id=" + stickyTargetId + ")")));
-		lines.add("Defensive: " + (defensiveEnabled ? "ON" : "OFF"));
 		lines.addAll(debugLines);
 		return lines;
 	}
