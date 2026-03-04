@@ -76,6 +76,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private int lastTargetId = -1;
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int lastPrayerSwitchTick = -9999;
+	private String pendingSpellVerifyLabel;
+	private int pendingSpellVerifyTick = -1;
 	private final Map<Integer, CombatStyle> weaponStyleCache = new HashMap<>();
 	private final Map<Prayer, Integer> prayerWidgetCache = new HashMap<>();
 
@@ -94,6 +96,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		weaponStyleCache.clear();
 		prayerWidgetCache.clear();
 		debugLines.clear();
+		pendingSpellVerifyLabel = null;
+		pendingSpellVerifyTick = -1;
 		keyManager.registerKeyListener(this);
 		if (config.showOverlay())
 		{
@@ -114,6 +118,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	@Subscribe
 	public void onGameTick(net.runelite.api.events.GameTick ignored)
 	{
+		if (pendingSpellVerifyLabel != null && client.getTickCount() >= pendingSpellVerifyTick)
+		{
+			verifySelectedSpell();
+		}
 		if (!defensiveEnabled || client.getGameState() != GameState.LOGGED_IN || client.getLocalPlayer() == null)
 		{
 			return;
@@ -333,22 +341,25 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		int widgetId = findWidgetByName(root, spell.label());
-		if (widgetId == -1)
+		Widget spellWidget = findWidgetObjectByName(root, spell.label());
+		if (spellWidget == null)
 		{
 			logStep("Spell widget not found: " + spell.label());
 			return;
 		}
 
-		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Cast", spell.label());
-		logStep("Spell selected: " + spell.label());
+		client.menuAction(-1, spellWidget.getId(), MenuAction.CC_OP, 1, 0, "Cast", spell.label());
+		logStep("Spell cast action sent: " + spell.label() + " widgetId=" + spellWidget.getId());
+
+		pendingSpellVerifyLabel = spell.label();
+		pendingSpellVerifyTick = client.getTickCount() + 1;
 	}
 
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
 		String option = safe(event.getMenuOption()).toLowerCase(Locale.ROOT);
-		if (!(option.equals("wield") || option.equals("wear") || option.equals("drop") || option.equals("use") || option.equals("activate")))
+		if (!(option.equals("wield") || option.equals("wear") || option.equals("drop") || option.equals("use") || option.equals("activate") || option.equals("cast")))
 		{
 			return;
 		}
@@ -379,7 +390,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		logStep("Attack action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
 	}
 
-	private int findWidgetByName(Widget root, String needle)
+	private Widget findWidgetObjectByName(Widget root, String needle)
 	{
 		Deque<Widget> q = new ArrayDeque<>();
 		q.add(root);
@@ -394,14 +405,14 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			String name = safe(w.getName()).toLowerCase(Locale.ROOT);
 			if (!name.isEmpty() && name.contains(n))
 			{
-				return w.getId();
+				return w;
 			}
 			enqueue(q, w.getChildren());
 			enqueue(q, w.getDynamicChildren());
 			enqueue(q, w.getStaticChildren());
 			enqueue(q, w.getNestedChildren());
 		}
-		return -1;
+		return null;
 	}
 
 	private int widgetIdForPrayer(Prayer prayer)
@@ -418,7 +429,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return -1;
 		}
 
-		int id = findWidgetByName(root, prayerLabel(prayer));
+		Widget prayerWidget = findWidgetObjectByName(root, prayerLabel(prayer));
+		int id = prayerWidget == null ? -1 : prayerWidget.getId();
 		if (id != -1)
 		{
 			prayerWidgetCache.put(prayer, id);
@@ -595,6 +607,31 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	List<String> getOverlayLines()
 	{
 		return new ArrayList<>(debugLines);
+	}
+
+	private void verifySelectedSpell()
+	{
+		String expected = pendingSpellVerifyLabel;
+		pendingSpellVerifyLabel = null;
+		pendingSpellVerifyTick = -1;
+
+		if (expected == null)
+		{
+			return;
+		}
+
+		Widget selected = client.getSelectedWidget();
+		boolean selectedFlag = client.isWidgetSelected();
+		String selectedName = selected == null ? "" : safe(selected.getName());
+
+		if (selectedFlag && selectedName.toLowerCase(Locale.ROOT).contains(expected.toLowerCase(Locale.ROOT)))
+		{
+			logStep("Spell verify OK: " + expected + " selectedWidget='" + selectedName + "'");
+		}
+		else
+		{
+			logStep("Spell verify FAIL: expected='" + expected + "' selectedFlag=" + selectedFlag + " selectedWidget='" + selectedName + "'");
+		}
 	}
 
 	private enum CombatStyle
