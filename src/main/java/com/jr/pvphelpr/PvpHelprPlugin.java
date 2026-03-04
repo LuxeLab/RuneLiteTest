@@ -149,7 +149,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				if (tick - lastPrayerSwitchTick >= 1)
 				{
 					lastPrayerSwitchTick = tick;
-					activatePrayer(prayer);
+					activatePrayer(prayer, false);
 				}
 				else
 				{
@@ -240,9 +240,15 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				}
 
 				String name = safe(itemManager.getItemComposition(wantedId).getName());
-				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot);
-				client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wield", name);
-				client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wear", name);
+				String firstInvAction = "";
+				String[] invActions = itemManager.getItemComposition(wantedId).getInventoryActions();
+				if (invActions != null && invActions.length > 0 && invActions[0] != null)
+				{
+					firstInvAction = invActions[0];
+				}
+				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot + " firstAction=" + firstInvAction);
+				// ITEM_FIRST_OPTION maps to the first inventory action (usually Wield/Wear for equippable items).
+				client.menuAction(slot, invWidgetId, MenuAction.ITEM_FIRST_OPTION, wantedId, 0, firstInvAction, name);
 				equipped = true;
 				break;
 			}
@@ -275,16 +281,19 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			logStep("Prayer already active: " + prayerLabel(prayer));
 			return;
 		}
-		activatePrayer(prayer);
+		activatePrayer(prayer, true);
 	}
 
-	private void activatePrayer(Prayer prayer)
+	private void activatePrayer(Prayer prayer, boolean openPrayerTabFirst)
 	{
-		client.menuAction(-1, PRAYER_TAB_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Prayer", "");
+		if (openPrayerTabFirst)
+		{
+			client.menuAction(-1, PRAYER_TAB_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Prayer", "");
+		}
 		int widgetId = widgetIdForPrayer(prayer);
 		if (widgetId == -1)
 		{
-			logStep("Prayer widget not found for " + prayerLabel(prayer));
+			logStep("Prayer widget not found for " + prayerLabel(prayer) + " (openTab=" + openPrayerTabFirst + ")");
 			return;
 		}
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(prayer));
