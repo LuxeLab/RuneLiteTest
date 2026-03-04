@@ -57,13 +57,17 @@ public class TargetWeaponPlugin extends Plugin
 	private final Deque<String> recentLogLines = new ArrayDeque<>();
 	private static final int MAX_LINES = 8;
 	private static final int THICK_SKIN_WIDGET_ID = 35454985; // captured from prayer trace logger
+	private static final int PRAYER_TAB_WIDGET_ID = 10747961; // captured from prayer trace logger
 
 	private String lastTargetName;
 	private int lastTargetIndex = -1;
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int lastPrayerTriggerTick = -9999;
 	private final Map<Integer, Boolean> magicWeaponCache = new HashMap<>();
-	private static final int PRAYER_TRIGGER_COOLDOWN_TICKS = 2;
+
+	private PrayerActionState prayerActionState = PrayerActionState.IDLE;
+	private int nextPrayerActionTick = -1;
+	private boolean pendingPrayerActivation;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -79,6 +83,9 @@ public class TargetWeaponPlugin extends Plugin
 		lastWeaponId = Integer.MIN_VALUE;
 		lastPrayerTriggerTick = -9999;
 		magicWeaponCache.clear();
+		prayerActionState = PrayerActionState.IDLE;
+		nextPrayerActionTick = -1;
+		pendingPrayerActivation = false;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -101,6 +108,8 @@ public class TargetWeaponPlugin extends Plugin
 		{
 			return;
 		}
+
+		processPrayerStateMachine();
 
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
@@ -159,10 +168,15 @@ public class TargetWeaponPlugin extends Plugin
 			if (shouldTrigger)
 			{
 				int tick = client.getTickCount();
-				if (tick - lastPrayerTriggerTick >= PRAYER_TRIGGER_COOLDOWN_TICKS)
+				if (tick - lastPrayerTriggerTick >= config.prayerCooldownTicks())
 				{
 					lastPrayerTriggerTick = tick;
-					clientThread.invoke(this::activateThickSkinIfNeeded);
+					pendingPrayerActivation = true;
+					if (prayerActionState == PrayerActionState.IDLE)
+					{
+						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_THICK_SKIN;
+						nextPrayerActionTick = tick;
+					}
 				}
 			}
 		}
@@ -231,32 +245,64 @@ public class TargetWeaponPlugin extends Plugin
 		return result;
 	}
 
-	private void activateThickSkinIfNeeded()
+	private void processPrayerStateMachine()
 	{
-		if (client.getGameState() != GameState.LOGGED_IN)
-		{
-			return;
-		}
-		if (client.getBoostedSkillLevel(net.runelite.api.Skill.PRAYER) <= 0)
-		{
-			return;
-		}
-		if (client.isPrayerActive(Prayer.THICK_SKIN))
+		if (!pendingPrayerActivation)
 		{
 			return;
 		}
 
-		client.menuAction(
-			-1,
-			THICK_SKIN_WIDGET_ID,
-			MenuAction.CC_OP,
-			1,
-			0,
-			"Activate",
-			"Thick Skin"
-		);
-		addLine("Auto: Thick Skin ON");
-		log.info("[TARGET] Trigger condition met, requested Thick Skin activate");
+		int tick = client.getTickCount();
+		if (nextPrayerActionTick != -1 && tick < nextPrayerActionTick)
+		{
+			return;
+		}
+
+		if (client.getBoostedSkillLevel(net.runelite.api.Skill.PRAYER) <= 0)
+		{
+			pendingPrayerActivation = false;
+			prayerActionState = PrayerActionState.IDLE;
+			return;
+		}
+
+		if (client.isPrayerActive(Prayer.THICK_SKIN))
+		{
+			pendingPrayerActivation = false;
+			prayerActionState = PrayerActionState.IDLE;
+			return;
+		}
+
+		switch (prayerActionState)
+		{
+			case OPEN_PRAYER_TAB:
+				client.menuAction(-1, PRAYER_TAB_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Prayer", "");
+				prayerActionState = PrayerActionState.ACTIVATE_THICK_SKIN;
+				nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
+				break;
+
+			case ACTIVATE_THICK_SKIN:
+				client.menuAction(-1, THICK_SKIN_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Activate", "Thick Skin");
+				prayerActionState = PrayerActionState.VERIFY;
+				nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
+				break;
+
+			case VERIFY:
+				if (client.isPrayerActive(Prayer.THICK_SKIN))
+				{
+					addLine("Auto: Thick Skin ON");
+					log.info("[TARGET] Trigger condition met, Thick Skin verified ON");
+				}
+				pendingPrayerActivation = false;
+				prayerActionState = PrayerActionState.IDLE;
+				nextPrayerActionTick = -1;
+				break;
+
+			case IDLE:
+			default:
+				prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_THICK_SKIN;
+				nextPrayerActionTick = tick;
+				break;
+		}
 	}
 
 	private void addLine(String line)
@@ -271,5 +317,13 @@ public class TargetWeaponPlugin extends Plugin
 	List<String> getRecentLogLines()
 	{
 		return new ArrayList<>(recentLogLines);
+	}
+
+	private enum PrayerActionState
+	{
+		IDLE,
+		OPEN_PRAYER_TAB,
+		ACTIVATE_THICK_SKIN,
+		VERIFY
 	}
 }

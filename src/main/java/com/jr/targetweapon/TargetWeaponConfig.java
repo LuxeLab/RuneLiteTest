@@ -56,4 +56,34 @@ public interface TargetWeaponConfig extends Config
 	{
 		return 1387;
 	}
+
+	@ConfigItem(
+		keyName = "preferUiPath",
+		name = "Prefer UI path",
+		description = "Open prayer tab then activate prayer when possible"
+	)
+	default boolean preferUiPath()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "actionDelayTicks",
+		name = "Action delay (ticks)",
+		description = "Delay between prayer state-machine steps"
+	)
+	default int actionDelayTicks()
+	{
+		return 1;
+	}
+
+	@ConfigItem(
+		keyName = "prayerCooldownTicks",
+		name = "Prayer cooldown (ticks)",
+		description = "Minimum ticks between new prayer activation attempts"
+	)
+	default int prayerCooldownTicks()
+	{
+		return 2;
+	}
 }
