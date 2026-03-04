@@ -80,6 +80,9 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private int lastTargetId = -1;
 	private String currentTargetDisplay = "none";
 	private int lastWeaponId = Integer.MIN_VALUE;
+	private int stickyTargetId = -1;
+	private String stickyTargetName = "";
+	private int stickyTargetExpireTick = -1;
 	private int lastPrayerSwitchTick = -9999;
 	private String pendingSpellVerifyLabel;
 	private int pendingSpellVerifyTick = -1;
@@ -153,12 +156,26 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			lastTargetId = -1;
 			lastWeaponId = Integer.MIN_VALUE;
-			currentTargetDisplay = "none";
+			int tick = client.getTickCount();
+			if (stickyTargetId != -1 && tick <= stickyTargetExpireTick)
+			{
+				currentTargetDisplay = stickyTargetName + " (id=" + stickyTargetId + ") [trail " + (stickyTargetExpireTick - tick) + "t]";
+			}
+			else
+			{
+				currentTargetDisplay = "none";
+				stickyTargetId = -1;
+				stickyTargetName = "";
+				stickyTargetExpireTick = -1;
+			}
 			return;
 		}
 
 		Player target = (Player) interacting;
 		currentTargetDisplay = safe(target.getName()) + " (id=" + target.getId() + ")";
+		stickyTargetId = target.getId();
+		stickyTargetName = safe(target.getName());
+		stickyTargetExpireTick = client.getTickCount() + Math.max(0, config.targetTrailTicks());
 		PlayerComposition comp = target.getPlayerComposition();
 		if (comp == null)
 		{
@@ -258,14 +275,22 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 						Player p = (Player) a;
 						pendingCastTargetId = p.getId();
 						pendingCastTargetName = safe(p.getName());
-						pendingCastOnTarget = true;
-						pendingCastOnTargetTick = client.getTickCount() + 1;
-						logStep("Queued cast-on-target for next tick -> " + pendingCastTargetName + " (id=" + pendingCastTargetId + ")");
+					}
+					else if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
+					{
+						pendingCastTargetId = stickyTargetId;
+						pendingCastTargetName = stickyTargetName;
+						logStep("Queued cast using sticky target -> " + pendingCastTargetName + " (id=" + pendingCastTargetId + ")");
 					}
 					else
 					{
-						logStep("Queued cast skipped: no player target at queue time");
+						logStep("Queued cast skipped: no live or sticky target at queue time");
+						return true;
 					}
+
+					pendingCastOnTarget = true;
+					pendingCastOnTargetTick = client.getTickCount() + 1;
+					logStep("Queued cast-on-target for next tick -> " + pendingCastTargetName + " (id=" + pendingCastTargetId + ")");
 				}
 				else if (!castSelectedSpellOnCurrentTarget())
 				{
@@ -474,6 +499,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
 		{
+			if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
+			{
+				logStep("Cast-on-target using sticky target fallback");
+				return castSelectedSpellOnTarget(stickyTargetId, stickyTargetName);
+			}
 			logStep("Cast-on-target skipped: no player target");
 			return false;
 		}
@@ -509,6 +539,12 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
 		{
+			if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
+			{
+				client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, stickyTargetId, 0, "Attack", stickyTargetName);
+				logStep("Attack action sent using sticky target -> " + stickyTargetName + " (id=" + stickyTargetId + ")");
+				return;
+			}
 			logStep("Attack skipped: no player target");
 			return;
 		}
@@ -802,6 +838,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	{
 		ArrayList<String> lines = new ArrayList<>();
 		lines.add("Target: " + currentTargetDisplay);
+		lines.add("Sticky: " + (stickyTargetId == -1 ? "none" : (stickyTargetName + " (id=" + stickyTargetId + ")")));
 		lines.add("Defensive: " + (defensiveEnabled ? "ON" : "OFF"));
 		lines.addAll(debugLines);
 		return lines;

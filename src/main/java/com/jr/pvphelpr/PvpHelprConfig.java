@@ -77,6 +77,18 @@ public interface PvpHelprConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		keyName = "targetTrailTicks",
+		name = "Target Trail (ticks)",
+		description = "Keep last target for this many ticks after target momentarily drops",
+		position = 6,
+		section = defensiveSection
+	)
+	default int targetTrailTicks()
+	{
+		return 6;
+	}
+
 	@ConfigSection(
 		name = "Hotkey Profile One",
 		description = "One-key gear/prayer/spell/action profile",
