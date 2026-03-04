@@ -7,7 +7,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -21,6 +20,7 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetID;
+import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -73,6 +73,9 @@ public class TargetWeaponPlugin extends Plugin
 	private boolean pendingPrayerActivation;
 	private Prayer desiredProtectionPrayer;
 	private boolean lastActivationAttempted;
+	private long pendingActivationStartMs = -1;
+	private int pendingActivationStartTick = -1;
+	private boolean pendingBlockedDialogLogged;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -94,6 +97,9 @@ public class TargetWeaponPlugin extends Plugin
 		pendingPrayerActivation = false;
 		desiredProtectionPrayer = null;
 		lastActivationAttempted = false;
+		pendingActivationStartMs = -1;
+		pendingActivationStartTick = -1;
+		pendingBlockedDialogLogged = false;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -118,6 +124,7 @@ public class TargetWeaponPlugin extends Plugin
 		}
 
 		processPrayerStateMachine();
+		checkPrayerBlockDialog();
 
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
@@ -183,6 +190,9 @@ public class TargetWeaponPlugin extends Plugin
 					pendingPrayerActivation = true;
 					desiredProtectionPrayer = targetPrayer;
 					lastActivationAttempted = false;
+					pendingActivationStartMs = System.currentTimeMillis();
+					pendingActivationStartTick = tick;
+					pendingBlockedDialogLogged = false;
 					if (prayerActionState == PrayerActionState.IDLE)
 					{
 						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
@@ -301,6 +311,7 @@ public class TargetWeaponPlugin extends Plugin
 
 		if (client.isPrayerActive(desiredProtectionPrayer))
 		{
+			logActivationLatency("Prayer activated", desiredProtectionPrayer);
 			pendingPrayerActivation = false;
 			prayerActionState = PrayerActionState.IDLE;
 			desiredProtectionPrayer = null;
@@ -324,6 +335,10 @@ public class TargetWeaponPlugin extends Plugin
 					pendingPrayerActivation = false;
 					prayerActionState = PrayerActionState.IDLE;
 					desiredProtectionPrayer = null;
+					lastActivationAttempted = false;
+					pendingActivationStartMs = -1;
+					pendingActivationStartTick = -1;
+					pendingBlockedDialogLogged = false;
 					break;
 				}
 				client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(desiredProtectionPrayer));
@@ -347,6 +362,7 @@ public class TargetWeaponPlugin extends Plugin
 				{
 					addLine("Auto: " + prayerLabel(desiredProtectionPrayer) + " ON");
 					log.info("[TARGET] Trigger condition met, {} verified ON", desiredProtectionPrayer);
+					logActivationLatency("Prayer activated (verify)", desiredProtectionPrayer);
 				}
 				pendingPrayerActivation = false;
 				prayerActionState = PrayerActionState.IDLE;
@@ -448,7 +464,7 @@ public class TargetWeaponPlugin extends Plugin
 		{
 			return "Protect from Melee";
 		}
-		return Objects.toString(prayer);
+		return prayer == null ? "Unknown" : prayer.name();
 	}
 
 	private void addLine(String line)
@@ -463,6 +479,75 @@ public class TargetWeaponPlugin extends Plugin
 	List<String> getRecentLogLines()
 	{
 		return new ArrayList<>(recentLogLines);
+	}
+
+	private void checkPrayerBlockDialog()
+	{
+		if (!pendingPrayerActivation || pendingBlockedDialogLogged)
+		{
+			return;
+		}
+
+		String text = firstNonBlank(
+			widgetText(WidgetInfo.DIALOG_SPRITE_TEXT),
+			widgetText(WidgetInfo.DIALOG_DOUBLE_SPRITE_TEXT),
+			widgetText(WidgetInfo.DIALOG_NPC_TEXT),
+			widgetText(WidgetInfo.DIALOG_PLAYER_TEXT)
+		);
+		if (text == null)
+		{
+			return;
+		}
+
+		String lower = text.toLowerCase();
+		if (lower.contains("you need a prayer level") || lower.contains("to use protect from") || lower.contains("you need") && lower.contains("prayer"))
+		{
+			long now = System.currentTimeMillis();
+			long ms = pendingActivationStartMs > 0 ? (now - pendingActivationStartMs) : -1;
+			int tickDelta = pendingActivationStartTick >= 0 ? (client.getTickCount() - pendingActivationStartTick) : -1;
+			pendingBlockedDialogLogged = true;
+			addLine("Blocked: " + text);
+			log.warn("[TARGET] Prayer blocked dialog after {}ms ({} ticks). Desired={} Dialog='{}'", ms, tickDelta, desiredProtectionPrayer, text);
+		}
+	}
+
+	private void logActivationLatency(String event, Prayer prayer)
+	{
+		long now = System.currentTimeMillis();
+		long ms = pendingActivationStartMs > 0 ? (now - pendingActivationStartMs) : -1;
+		int tickDelta = pendingActivationStartTick >= 0 ? (client.getTickCount() - pendingActivationStartTick) : -1;
+		log.info("[TARGET] {} after {}ms ({} ticks). Prayer={}", event, ms, tickDelta, prayer);
+		pendingActivationStartMs = -1;
+		pendingActivationStartTick = -1;
+		pendingBlockedDialogLogged = false;
+	}
+
+	private String widgetText(WidgetInfo info)
+	{
+		Widget w = client.getWidget(info);
+		if (w == null)
+		{
+			return null;
+		}
+		String t = w.getText();
+		if (t == null)
+		{
+			return null;
+		}
+		t = t.replace("<br>", " ").replaceAll("<[^>]+>", "").trim();
+		return t.isEmpty() ? null : t;
+	}
+
+	private static String firstNonBlank(String... values)
+	{
+		for (String v : values)
+		{
+			if (v != null && !v.isBlank())
+			{
+				return v;
+			}
+		}
+		return null;
 	}
 
 	private enum PrayerActionState
