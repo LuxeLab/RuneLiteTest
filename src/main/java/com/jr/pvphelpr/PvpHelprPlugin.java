@@ -715,13 +715,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 	private static int normalizeItemId(int equipmentId)
 	{
+		// Equipment Inspector plugin and newer RuneLite APIs use direct item IDs from getEquipmentId.
 		if (equipmentId <= 0)
 		{
 			return -1;
-		}
-		if (equipmentId >= PlayerComposition.ITEM_OFFSET)
-		{
-			return equipmentId - PlayerComposition.ITEM_OFFSET;
 		}
 		return equipmentId;
 	}
