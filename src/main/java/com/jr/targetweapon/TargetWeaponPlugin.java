@@ -12,10 +12,12 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.MenuAction;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.Prayer;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.widgets.Widget;
@@ -77,6 +79,13 @@ public class TargetWeaponPlugin extends Plugin
 	private int pendingActivationStartTick = -1;
 	private boolean pendingBlockedDialogLogged;
 
+	private int traceDetectTick = -1;
+	private int traceInvokeTick = -1;
+	private int traceFeedbackTick = -1;
+	private long traceDetectMs = -1;
+	private long traceInvokeMs = -1;
+	private long traceFeedbackMs = -1;
+
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
 	{
@@ -100,6 +109,8 @@ public class TargetWeaponPlugin extends Plugin
 		pendingActivationStartMs = -1;
 		pendingActivationStartTick = -1;
 		pendingBlockedDialogLogged = false;
+		traceDetectTick = traceInvokeTick = traceFeedbackTick = -1;
+		traceDetectMs = traceInvokeMs = traceFeedbackMs = -1;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -193,6 +204,10 @@ public class TargetWeaponPlugin extends Plugin
 					pendingActivationStartMs = System.currentTimeMillis();
 					pendingActivationStartTick = tick;
 					pendingBlockedDialogLogged = false;
+					traceDetectTick = tick;
+					traceDetectMs = pendingActivationStartMs;
+					traceInvokeTick = traceFeedbackTick = -1;
+					traceInvokeMs = traceFeedbackMs = -1;
 					if (prayerActionState == PrayerActionState.IDLE)
 					{
 						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
@@ -226,7 +241,11 @@ public class TargetWeaponPlugin extends Plugin
 
 	private static String safe(String s)
 	{
-		return s == null ? "" : s;
+		if (s == null)
+		{
+			return "";
+		}
+		return s.replaceAll("<[^>]+>", "");
 	}
 
 	private CombatStyle classifyWeaponStyle(int weaponItemId)
@@ -343,6 +362,9 @@ public class TargetWeaponPlugin extends Plugin
 				}
 				client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(desiredProtectionPrayer));
 				lastActivationAttempted = true;
+				traceInvokeTick = tick;
+				traceInvokeMs = System.currentTimeMillis();
+				log.info("[TARGETTRACE] detect->invoke: {} ticks, {} ms", (traceDetectTick >= 0 ? traceInvokeTick - traceDetectTick : -1), (traceDetectMs > 0 ? traceInvokeMs - traceDetectMs : -1));
 				if (config.preferUiPath())
 				{
 					prayerActionState = PrayerActionState.VERIFY;
@@ -548,6 +570,35 @@ public class TargetWeaponPlugin extends Plugin
 			}
 		}
 		return null;
+	}
+
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		if (!pendingPrayerActivation)
+		{
+			return;
+		}
+		if (event.getType() != ChatMessageType.MESBOX)
+		{
+			return;
+		}
+		String msg = safe(event.getMessage()).toLowerCase();
+		if (!(msg.contains("you need") && msg.contains("prayer")))
+		{
+			return;
+		}
+
+		traceFeedbackTick = client.getTickCount();
+		traceFeedbackMs = System.currentTimeMillis();
+		int dti = (traceDetectTick >= 0 && traceInvokeTick >= 0) ? (traceInvokeTick - traceDetectTick) : -1;
+		int itf = (traceInvokeTick >= 0) ? (traceFeedbackTick - traceInvokeTick) : -1;
+		int dtf = (traceDetectTick >= 0) ? (traceFeedbackTick - traceDetectTick) : -1;
+		long dtiMs = (traceDetectMs > 0 && traceInvokeMs > 0) ? (traceInvokeMs - traceDetectMs) : -1;
+		long itfMs = (traceInvokeMs > 0) ? (traceFeedbackMs - traceInvokeMs) : -1;
+		long dtfMs = (traceDetectMs > 0) ? (traceFeedbackMs - traceDetectMs) : -1;
+		log.warn("[TARGETTRACE] detect->invoke={} ticks ({}ms), invoke->feedback={} ticks ({}ms), total={} ticks ({}ms), msg='{}'", dti, dtiMs, itf, itfMs, dtf, dtfMs, event.getMessage());
+		addLine("Trace total: " + dtf + " ticks");
 	}
 
 	private enum PrayerActionState
