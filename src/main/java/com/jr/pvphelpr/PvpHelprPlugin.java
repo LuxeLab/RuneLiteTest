@@ -86,6 +86,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private final Map<Prayer, Integer> prayerWidgetCache = new HashMap<>();
 	private boolean pendingCastOnTarget;
 	private int pendingCastOnTargetTick = -1;
+	private int pendingCastTargetId = -1;
+	private String pendingCastTargetName = "";
 
 	@Provides
 	PvpHelprConfig provideConfig(ConfigManager configManager)
@@ -132,10 +134,12 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			pendingCastOnTarget = false;
 			pendingCastOnTargetTick = -1;
-			if (!castSelectedSpellOnCurrentTarget())
+			if (!castSelectedSpellOnTarget(pendingCastTargetId, pendingCastTargetName))
 			{
 				logStep("Deferred cast-on-target failed");
 			}
+			pendingCastTargetId = -1;
+			pendingCastTargetName = "";
 		}
 		if (!defensiveEnabled || client.getGameState() != GameState.LOGGED_IN || client.getLocalPlayer() == null)
 		{
@@ -244,9 +248,20 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			{
 				if (config.spellToCast() != null && config.spellToCast() != PvpHelprSpell.NONE)
 				{
-					pendingCastOnTarget = true;
-					pendingCastOnTargetTick = client.getTickCount() + 1;
-					logStep("Queued cast-on-target for next tick");
+					Actor a = client.getLocalPlayer() == null ? null : client.getLocalPlayer().getInteracting();
+					if (a instanceof Player)
+					{
+						Player p = (Player) a;
+						pendingCastTargetId = p.getId();
+						pendingCastTargetName = safe(p.getName());
+						pendingCastOnTarget = true;
+						pendingCastOnTargetTick = client.getTickCount() + 1;
+						logStep("Queued cast-on-target for next tick -> " + pendingCastTargetName + " (id=" + pendingCastTargetId + ")");
+					}
+					else
+					{
+						logStep("Queued cast skipped: no player target at queue time");
+					}
 				}
 				else if (!castSelectedSpellOnCurrentTarget())
 				{
@@ -315,11 +330,9 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				}
 				else
 				{
-					// Fallback explicit equip actions. Manual log shows Wield uses CC_OP id=3.
+					// Safer fallback: only one explicit equip-like op, avoid multi-op spam that can misfire.
 					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 3, wantedId, "Wield", name);
-					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 4, wantedId, "Wear", name);
-					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 3, wantedId, "Equip", name);
-					logStep("Equip send fallback actions: CC_OP id=3/4");
+					logStep("Equip send fallback action: CC_OP id=3 Wield");
 				}
 
 				equipped = true;
@@ -414,6 +427,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			logStep("Game message: members-world restriction blocked spell cast");
 		}
+		if (msg.contains("there is no player"))
+		{
+			logStep("Game message: no valid cast target");
+		}
 	}
 
 	@Subscribe
@@ -458,8 +475,23 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 
 		Player target = (Player) interacting;
-		client.menuAction(0, 0, MenuAction.WIDGET_TARGET_ON_PLAYER, target.getId(), 0, "Cast", safe(target.getName()));
-		logStep("Cast-on-target action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
+		return castSelectedSpellOnTarget(target.getId(), safe(target.getName()));
+	}
+
+	private boolean castSelectedSpellOnTarget(int targetId, String targetName)
+	{
+		if (targetId < 0)
+		{
+			logStep("Cast-on-target skipped: invalid targetId");
+			return false;
+		}
+		if (!client.isWidgetSelected())
+		{
+			logStep("Cast-on-target skipped: selected spell cleared before cast");
+			return false;
+		}
+		client.menuAction(0, 0, MenuAction.WIDGET_TARGET_ON_PLAYER, targetId, 0, "Cast", safe(targetName));
+		logStep("Cast-on-target action sent -> " + safe(targetName) + " (id=" + targetId + ")");
 		return true;
 	}
 
