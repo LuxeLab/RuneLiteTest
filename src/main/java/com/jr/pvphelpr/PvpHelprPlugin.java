@@ -22,6 +22,7 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.Prayer;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetID;
@@ -247,8 +248,21 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 					firstInvAction = invActions[0];
 				}
 				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot + " firstAction=" + firstInvAction);
-				// ITEM_FIRST_OPTION maps to the first inventory action (usually Wield/Wear for equippable items).
-				client.menuAction(slot, invWidgetId, MenuAction.ITEM_FIRST_OPTION, wantedId, 0, firstInvAction, name);
+
+				if (!firstInvAction.isBlank() && !firstInvAction.equalsIgnoreCase("Drop"))
+				{
+					client.menuAction(slot, invWidgetId, MenuAction.ITEM_FIRST_OPTION, wantedId, 0, firstInvAction, name);
+					logStep("Equip send ITEM_FIRST_OPTION -> " + firstInvAction);
+				}
+				else
+				{
+					// Fallback explicit equip actions when cache doesn't expose inventory actions reliably.
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wield", name);
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wear", name);
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Equip", name);
+					logStep("Equip send fallback actions: Wield/Wear/Equip");
+				}
+
 				equipped = true;
 				break;
 			}
@@ -324,6 +338,18 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Cast", spell.label());
 		logStep("Spell selected: " + spell.label());
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		String option = safe(event.getMenuOption()).toLowerCase(Locale.ROOT);
+		if (!(option.equals("wield") || option.equals("wear") || option.equals("drop") || option.equals("use") || option.equals("activate")))
+		{
+			return;
+		}
+		log.info("[PvP Helpr] MenuOptionClicked option='{}' target='{}' action={} id={} param0={} param1={} itemId={} itemOp={}",
+			event.getMenuOption(), event.getMenuTarget(), event.getMenuAction(), event.getId(), event.getParam0(), event.getParam1(), event.getItemId(), event.getItemOp());
 	}
 
 	private void attackCurrentTarget()
@@ -470,6 +496,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private Prayer parsePrayer(String value)
 	{
 		String v = value.toLowerCase(Locale.ROOT).trim();
+		if (v.equals("thick skin")) return Prayer.THICK_SKIN;
 		if (v.equals("protect from magic") || v.equals("pfm")) return Prayer.PROTECT_FROM_MAGIC;
 		if (v.equals("protect from missiles") || v.equals("protect from missles") || v.equals("pfr")) return Prayer.PROTECT_FROM_MISSILES;
 		if (v.equals("protect from melee") || v.equals("pfmlee")) return Prayer.PROTECT_FROM_MELEE;
@@ -483,6 +510,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 	private String prayerLabel(Prayer prayer)
 	{
+		if (prayer == Prayer.THICK_SKIN) return "Thick Skin";
 		if (prayer == Prayer.PROTECT_FROM_MAGIC) return "Protect from Magic";
 		if (prayer == Prayer.PROTECT_FROM_MISSILES) return "Protect from Missiles";
 		if (prayer == Prayer.PROTECT_FROM_MELEE) return "Protect from Melee";
