@@ -7,6 +7,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -18,6 +19,8 @@ import net.runelite.api.PlayerComposition;
 import net.runelite.api.Prayer;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.kit.KitType;
+import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetID;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -56,18 +59,19 @@ public class TargetWeaponPlugin extends Plugin
 
 	private final Deque<String> recentLogLines = new ArrayDeque<>();
 	private static final int MAX_LINES = 8;
-	private static final int THICK_SKIN_WIDGET_ID = 35454985; // captured from prayer trace logger
 	private static final int PRAYER_TAB_WIDGET_ID = 10747961; // captured from prayer trace logger
 
 	private String lastTargetName;
 	private int lastTargetIndex = -1;
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int lastPrayerTriggerTick = -9999;
-	private final Map<Integer, Boolean> magicWeaponCache = new HashMap<>();
+	private final Map<Integer, CombatStyle> weaponStyleCache = new HashMap<>();
+	private final Map<Prayer, Integer> prayerWidgetCache = new HashMap<>();
 
 	private PrayerActionState prayerActionState = PrayerActionState.IDLE;
 	private int nextPrayerActionTick = -1;
 	private boolean pendingPrayerActivation;
+	private Prayer desiredProtectionPrayer;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -82,10 +86,12 @@ public class TargetWeaponPlugin extends Plugin
 		lastTargetIndex = -1;
 		lastWeaponId = Integer.MIN_VALUE;
 		lastPrayerTriggerTick = -9999;
-		magicWeaponCache.clear();
+		weaponStyleCache.clear();
+		prayerWidgetCache.clear();
 		prayerActionState = PrayerActionState.IDLE;
 		nextPrayerActionTick = -1;
 		pendingPrayerActivation = false;
+		desiredProtectionPrayer = null;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -155,26 +161,28 @@ public class TargetWeaponPlugin extends Plugin
 
 		if (changed && config.autoThickSkinOnWeapon())
 		{
-			boolean shouldTrigger;
+			CombatStyle style;
 			if (config.useMagicWeaponDetection())
 			{
-				shouldTrigger = isLikelyMagicWeapon(normalizedWeaponId);
+				style = classifyWeaponStyle(normalizedWeaponId);
 			}
 			else
 			{
-				shouldTrigger = normalizedWeaponId == config.triggerWeaponId();
+				style = normalizedWeaponId == config.triggerWeaponId() ? CombatStyle.MAGIC : CombatStyle.UNKNOWN;
 			}
 
-			if (shouldTrigger)
+			Prayer targetPrayer = prayerForStyle(style);
+			if (targetPrayer != null)
 			{
 				int tick = client.getTickCount();
 				if (tick - lastPrayerTriggerTick >= config.prayerCooldownTicks())
 				{
 					lastPrayerTriggerTick = tick;
 					pendingPrayerActivation = true;
+					desiredProtectionPrayer = targetPrayer;
 					if (prayerActionState == PrayerActionState.IDLE)
 					{
-						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_THICK_SKIN;
+						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
 						nextPrayerActionTick = tick;
 					}
 				}
@@ -208,20 +216,20 @@ public class TargetWeaponPlugin extends Plugin
 		return s == null ? "" : s;
 	}
 
-	private boolean isLikelyMagicWeapon(int weaponItemId)
+	private CombatStyle classifyWeaponStyle(int weaponItemId)
 	{
 		if (weaponItemId <= 0)
 		{
-			return false;
+			return CombatStyle.UNKNOWN;
 		}
 
-		Boolean cached = magicWeaponCache.get(weaponItemId);
+		CombatStyle cached = weaponStyleCache.get(weaponItemId);
 		if (cached != null)
 		{
 			return cached;
 		}
 
-		boolean result = false;
+		CombatStyle style = CombatStyle.UNKNOWN;
 		ItemStats stats = itemManager.getItemStats(weaponItemId);
 		if (stats != null)
 		{
@@ -231,23 +239,46 @@ public class TargetWeaponPlugin extends Plugin
 				int melee = Math.max(eq.getAstab(), Math.max(eq.getAslash(), eq.getAcrush()));
 				int magic = eq.getAmagic();
 				int ranged = eq.getArange();
-				result = magic > ranged && magic > melee && magic > 0;
+
+				if (magic > ranged && magic > melee && magic > 0)
+				{
+					style = CombatStyle.MAGIC;
+				}
+				else if (ranged > magic && ranged > melee && ranged > 0)
+				{
+					style = CombatStyle.RANGED;
+				}
+				else if (melee > 0)
+				{
+					style = CombatStyle.MELEE;
+				}
 			}
 		}
 
-		if (!result)
+		if (style == CombatStyle.UNKNOWN)
 		{
 			String name = itemManager.getItemComposition(weaponItemId).getName().toLowerCase();
-			result = name.contains("staff") || name.contains("wand") || name.contains("trident") || name.contains("sceptre") || name.contains("kodai") || name.contains("nightmare staff");
+			if (name.contains("staff") || name.contains("wand") || name.contains("trident") || name.contains("sceptre") || name.contains("kodai"))
+			{
+				style = CombatStyle.MAGIC;
+			}
+			else if (name.contains("bow") || name.contains("crossbow") || name.contains("blowpipe") || name.contains("ballista"))
+			{
+				style = CombatStyle.RANGED;
+			}
+			else if (name.contains("sword") || name.contains("scimitar") || name.contains("whip") || name.contains("mace") || name.contains("axe") || name.contains("dagger") || name.contains("maul") || name.contains("halberd") || name.contains("spear"))
+			{
+				style = CombatStyle.MELEE;
+			}
 		}
 
-		magicWeaponCache.put(weaponItemId, result);
-		return result;
+		weaponStyleCache.put(weaponItemId, style);
+		return style;
 	}
 
 	private void processPrayerStateMachine()
 	{
-		if (!pendingPrayerActivation)
+		if (!pendingPrayerActivation || desiredProtectionPrayer == null)
 		{
 			return;
 		}
@@ -265,10 +296,11 @@ public class TargetWeaponPlugin extends Plugin
 			return;
 		}
 
-		if (client.isPrayerActive(Prayer.THICK_SKIN))
+		if (client.isPrayerActive(desiredProtectionPrayer))
 		{
 			pendingPrayerActivation = false;
 			prayerActionState = PrayerActionState.IDLE;
+			desiredProtectionPrayer = null;
 			return;
 		}
 
@@ -276,33 +308,131 @@ public class TargetWeaponPlugin extends Plugin
 		{
 			case OPEN_PRAYER_TAB:
 				client.menuAction(-1, PRAYER_TAB_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Prayer", "");
-				prayerActionState = PrayerActionState.ACTIVATE_THICK_SKIN;
+				prayerActionState = PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
 				nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
 				break;
 
-			case ACTIVATE_THICK_SKIN:
-				client.menuAction(-1, THICK_SKIN_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Activate", "Thick Skin");
+			case ACTIVATE_PROTECTION_PRAYER:
+				int widgetId = widgetIdForPrayer(desiredProtectionPrayer);
+				if (widgetId == -1)
+				{
+					addLine("Auto: prayer widget not found for " + prayerLabel(desiredProtectionPrayer));
+					pendingPrayerActivation = false;
+					prayerActionState = PrayerActionState.IDLE;
+					desiredProtectionPrayer = null;
+					break;
+				}
+				client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(desiredProtectionPrayer));
 				prayerActionState = PrayerActionState.VERIFY;
 				nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
 				break;
 
 			case VERIFY:
-				if (client.isPrayerActive(Prayer.THICK_SKIN))
+				if (client.isPrayerActive(desiredProtectionPrayer))
 				{
-					addLine("Auto: Thick Skin ON");
-					log.info("[TARGET] Trigger condition met, Thick Skin verified ON");
+					addLine("Auto: " + prayerLabel(desiredProtectionPrayer) + " ON");
+					log.info("[TARGET] Trigger condition met, {} verified ON", desiredProtectionPrayer);
 				}
 				pendingPrayerActivation = false;
 				prayerActionState = PrayerActionState.IDLE;
 				nextPrayerActionTick = -1;
+				desiredProtectionPrayer = null;
 				break;
 
 			case IDLE:
 			default:
-				prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_THICK_SKIN;
+				prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
 				nextPrayerActionTick = tick;
 				break;
 		}
+	}
+
+	private Prayer prayerForStyle(CombatStyle style)
+	{
+		switch (style)
+		{
+			case MAGIC:
+				return Prayer.PROTECT_FROM_MAGIC;
+			case RANGED:
+				return Prayer.PROTECT_FROM_MISSILES;
+			case MELEE:
+				return Prayer.PROTECT_FROM_MELEE;
+			default:
+				return null;
+		}
+	}
+
+	private int widgetIdForPrayer(Prayer prayer)
+	{
+		Integer cached = prayerWidgetCache.get(prayer);
+		if (cached != null)
+		{
+			return cached;
+		}
+
+		String needle = prayerLabel(prayer).toLowerCase();
+		Widget root = client.getWidget(WidgetID.PRAYER_GROUP_ID, 0);
+		if (root == null)
+		{
+			return -1;
+		}
+
+		Deque<Widget> queue = new ArrayDeque<>();
+		queue.add(root);
+		while (!queue.isEmpty())
+		{
+			Widget w = queue.poll();
+			if (w == null)
+			{
+				continue;
+			}
+
+			String n = safe(w.getName()).replace("<col=ff9040>", "").replace("</col>", "").toLowerCase();
+			if (n.contains(needle))
+			{
+				prayerWidgetCache.put(prayer, w.getId());
+				return w.getId();
+			}
+
+			enqueue(queue, w.getChildren());
+			enqueue(queue, w.getDynamicChildren());
+			enqueue(queue, w.getStaticChildren());
+			enqueue(queue, w.getNestedChildren());
+		}
+
+		return -1;
+	}
+
+	private static void enqueue(Deque<Widget> queue, Widget[] widgets)
+	{
+		if (widgets == null)
+		{
+			return;
+		}
+		for (Widget w : widgets)
+		{
+			if (w != null)
+			{
+				queue.add(w);
+			}
+		}
+	}
+
+	private String prayerLabel(Prayer prayer)
+	{
+		if (prayer == Prayer.PROTECT_FROM_MAGIC)
+		{
+			return "Protect from Magic";
+		}
+		if (prayer == Prayer.PROTECT_FROM_MISSILES)
+		{
+			return "Protect from Missiles";
+		}
+		if (prayer == Prayer.PROTECT_FROM_MELEE)
+		{
+			return "Protect from Melee";
+		}
+		return Objects.toString(prayer);
 	}
 
 	private void addLine(String line)
@@ -323,7 +453,15 @@ public class TargetWeaponPlugin extends Plugin
 	{
 		IDLE,
 		OPEN_PRAYER_TAB,
-		ACTIVATE_THICK_SKIN,
+		ACTIVATE_PROTECTION_PRAYER,
 		VERIFY
+	}
+
+	private enum CombatStyle
+	{
+		MAGIC,
+		RANGED,
+		MELEE,
+		UNKNOWN
 	}
 }
