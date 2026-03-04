@@ -256,11 +256,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				}
 				else
 				{
-					// Fallback explicit equip actions when cache doesn't expose inventory actions reliably.
-					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wield", name);
-					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wear", name);
-					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Equip", name);
-					logStep("Equip send fallback actions: Wield/Wear/Equip");
+					// Fallback explicit equip actions. Manual log shows Wield uses CC_OP id=3.
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 3, wantedId, "Wield", name);
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 4, wantedId, "Wear", name);
+					client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 3, wantedId, "Equip", name);
+					logStep("Equip send fallback actions: CC_OP id=3/4");
 				}
 
 				equipped = true;
@@ -295,7 +295,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			logStep("Prayer already active: " + prayerLabel(prayer));
 			return;
 		}
-		activatePrayer(prayer, true);
+		activatePrayer(prayer, false);
 	}
 
 	private void activatePrayer(Prayer prayer, boolean openPrayerTabFirst)
@@ -303,6 +303,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		if (openPrayerTabFirst)
 		{
 			client.menuAction(-1, PRAYER_TAB_WIDGET_ID, MenuAction.CC_OP, 1, 0, "Prayer", "");
+		}
+		else
+		{
+			logStep("Prayer action without opening prayer tab");
 		}
 		int widgetId = widgetIdForPrayer(prayer);
 		if (widgetId == -1)
@@ -350,6 +354,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 		log.info("[PvP Helpr] MenuOptionClicked option='{}' target='{}' action={} id={} param0={} param1={} itemId={} itemOp={}",
 			event.getMenuOption(), event.getMenuTarget(), event.getMenuAction(), event.getId(), event.getParam0(), event.getParam1(), event.getItemId(), event.getItemOp());
+		if (option.equals("wield") || option.equals("wear"))
+		{
+			logStep("Observed manual equip signature: action=" + event.getMenuAction() + " id=" + event.getId() + " param0=" + event.getParam0() + " param1=" + event.getParam1() + " itemId=" + event.getItemId());
+		}
 	}
 
 	private void attackCurrentTarget()
