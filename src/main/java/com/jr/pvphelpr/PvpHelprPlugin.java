@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Actor;
@@ -22,6 +23,7 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.Player;
 import net.runelite.api.PlayerComposition;
 import net.runelite.api.Prayer;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.widgets.Widget;
@@ -80,6 +82,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private int pendingSpellVerifyTick = -1;
 	private final Map<Integer, CombatStyle> weaponStyleCache = new HashMap<>();
 	private final Map<Prayer, Integer> prayerWidgetCache = new HashMap<>();
+	private boolean pendingCastOnTarget;
+	private int pendingCastOnTargetTick = -1;
 
 	@Provides
 	PvpHelprConfig provideConfig(ConfigManager configManager)
@@ -121,6 +125,15 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		if (pendingSpellVerifyLabel != null && client.getTickCount() >= pendingSpellVerifyTick)
 		{
 			verifySelectedSpell();
+		}
+		if (pendingCastOnTarget && client.getTickCount() >= pendingCastOnTargetTick)
+		{
+			pendingCastOnTarget = false;
+			pendingCastOnTargetTick = -1;
+			if (!castSelectedSpellOnCurrentTarget())
+			{
+				logStep("Deferred cast-on-target failed");
+			}
 		}
 		if (!defensiveEnabled || client.getGameState() != GameState.LOGGED_IN || client.getLocalPlayer() == null)
 		{
@@ -207,7 +220,16 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 		if (config.attackTarget())
 		{
-			attackCurrentTarget();
+			if (config.spellToCast() != null && config.spellToCast() != PvpHelprSpell.NONE)
+			{
+				pendingCastOnTarget = true;
+				pendingCastOnTargetTick = client.getTickCount() + 1;
+				logStep("Queued cast-on-target for next tick");
+			}
+			else if (!castSelectedSpellOnCurrentTarget())
+			{
+				attackCurrentTarget();
+			}
 		}
 
 		if (config.enableReverseSwapGear())
@@ -256,6 +278,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 					firstInvAction = invActions[0];
 				}
 				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot + " firstAction=" + firstInvAction);
+				applyActionDelay("equip:" + wantedId);
 
 				if (!firstInvAction.isBlank() && !firstInvAction.equalsIgnoreCase("Drop"))
 				{
@@ -322,6 +345,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			logStep("Prayer widget not found for " + prayerLabel(prayer) + " (openTab=" + openPrayerTabFirst + ")");
 			return;
 		}
+		applyActionDelay("prayer:" + prayerLabel(prayer));
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(prayer));
 		logStep("Prayer action sent: " + prayerLabel(prayer));
 	}
@@ -348,6 +372,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
+		applyActionDelay("spellSelect:" + spell.label());
 		client.menuAction(-1, spellWidget.getId(), MenuAction.WIDGET_TARGET, 0, -1, "Cast", spell.label());
 		logStep("Spell cast action sent: " + spell.label() + " widgetId=" + spellWidget.getId() + " action=WIDGET_TARGET");
 
@@ -356,10 +381,20 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	}
 
 	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		String msg = safe(event.getMessage()).toLowerCase(Locale.ROOT);
+		if (msg.contains("members' world") && msg.contains("cast that spell"))
+		{
+			logStep("Game message: members-world restriction blocked spell cast");
+		}
+	}
+
+	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
 		String option = safe(event.getMenuOption()).toLowerCase(Locale.ROOT);
-		if (!(option.equals("wield") || option.equals("wear") || option.equals("drop") || option.equals("use") || option.equals("activate") || option.equals("cast")))
+		if (!(option.equals("wield") || option.equals("wear") || option.equals("drop") || option.equals("use") || option.equals("activate") || option.equals("cast") || option.equals("attack")))
 		{
 			return;
 		}
@@ -369,6 +404,38 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			logStep("Observed manual equip signature: action=" + event.getMenuAction() + " id=" + event.getId() + " param0=" + event.getParam0() + " param1=" + event.getParam1() + " itemId=" + event.getItemId());
 		}
+		if (option.equals("cast"))
+		{
+			logStep("Observed cast signature: action=" + event.getMenuAction() + " id=" + event.getId() + " param0=" + event.getParam0() + " param1=" + event.getParam1());
+		}
+	}
+
+	private boolean castSelectedSpellOnCurrentTarget()
+	{
+		if (!client.isWidgetSelected())
+		{
+			logStep("Cast-on-target skipped: no selected spell/widget");
+			return false;
+		}
+
+		if (client.getLocalPlayer() == null)
+		{
+			logStep("Cast-on-target skipped: local player null");
+			return false;
+		}
+
+		Actor interacting = client.getLocalPlayer().getInteracting();
+		if (!(interacting instanceof Player))
+		{
+			logStep("Cast-on-target skipped: no player target");
+			return false;
+		}
+
+		Player target = (Player) interacting;
+		applyActionDelay("castOnTarget:" + safe(target.getName()));
+		client.menuAction(0, 0, MenuAction.WIDGET_TARGET_ON_PLAYER, target.getId(), 0, "Cast", safe(target.getName()));
+		logStep("Cast-on-target action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
+		return true;
 	}
 
 	private void attackCurrentTarget()
@@ -386,6 +453,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		}
 
 		Player target = (Player) interacting;
+		applyActionDelay("attack:" + safe(target.getName()));
 		client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, target.getId(), 0, "Attack", safe(target.getName()));
 		logStep("Attack action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
 	}
@@ -601,6 +669,36 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		while (debugLines.size() > MAX_DEBUG_LINES)
 		{
 			debugLines.removeLast();
+		}
+	}
+
+	private void applyActionDelay(String actionLabel)
+	{
+		int min = Math.max(0, config.actionDelayMinMs());
+		int max = Math.max(0, config.actionDelayMaxMs());
+		if (max < min)
+		{
+			int tmp = min;
+			min = max;
+			max = tmp;
+		}
+		if (max == 0)
+		{
+			return;
+		}
+		int delay = (max == min) ? min : ThreadLocalRandom.current().nextInt(min, max + 1);
+		if (delay <= 0)
+		{
+			return;
+		}
+		logStep("Delay " + delay + "ms before " + actionLabel);
+		try
+		{
+			Thread.sleep(delay);
+		}
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
 		}
 	}
 

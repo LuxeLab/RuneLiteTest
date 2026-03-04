@@ -191,4 +191,28 @@ public interface PvpHelprConfig extends Config
 	{
 		return "";
 	}
+
+	@ConfigItem(
+		keyName = "actionDelayMinMs",
+		name = "Action Delay Min (ms)",
+		description = "Minimum random delay before each profile action",
+		position = 20,
+		section = profileOneSection
+	)
+	default int actionDelayMinMs()
+	{
+		return 0;
+	}
+
+	@ConfigItem(
+		keyName = "actionDelayMaxMs",
+		name = "Action Delay Max (ms)",
+		description = "Maximum random delay before each profile action",
+		position = 21,
+		section = profileOneSection
+	)
+	default int actionDelayMaxMs()
+	{
+		return 0;
+	}
 }
