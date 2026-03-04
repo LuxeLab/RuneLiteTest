@@ -78,6 +78,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private final Deque<String> debugLines = new ArrayDeque<>();
 	private static final int MAX_DEBUG_LINES = 10;
 	private int lastTargetId = -1;
+	private String currentTargetDisplay = "none";
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int lastPrayerSwitchTick = -9999;
 	private String pendingSpellVerifyLabel;
@@ -104,6 +105,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		weaponStyleCache.clear();
 		prayerWidgetCache.clear();
 		debugLines.clear();
+		currentTargetDisplay = "none";
 		pendingSpellVerifyLabel = null;
 		pendingSpellVerifyTick = -1;
 		keyManager.registerKeyListener(this);
@@ -151,10 +153,12 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			lastTargetId = -1;
 			lastWeaponId = Integer.MIN_VALUE;
+			currentTargetDisplay = "none";
 			return;
 		}
 
 		Player target = (Player) interacting;
+		currentTargetDisplay = safe(target.getName()) + " (id=" + target.getId() + ")";
 		PlayerComposition comp = target.getPlayerComposition();
 		if (comp == null)
 		{
@@ -796,7 +800,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 	List<String> getOverlayLines()
 	{
-		return new ArrayList<>(debugLines);
+		ArrayList<String> lines = new ArrayList<>();
+		lines.add("Target: " + currentTargetDisplay);
+		lines.add("Defensive: " + (defensiveEnabled ? "ON" : "OFF"));
+		lines.addAll(debugLines);
+		return lines;
 	}
 
 	private void verifySelectedSpell()
