@@ -72,6 +72,7 @@ public class TargetWeaponPlugin extends Plugin
 	private int nextPrayerActionTick = -1;
 	private boolean pendingPrayerActivation;
 	private Prayer desiredProtectionPrayer;
+	private boolean lastActivationAttempted;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -92,6 +93,7 @@ public class TargetWeaponPlugin extends Plugin
 		nextPrayerActionTick = -1;
 		pendingPrayerActivation = false;
 		desiredProtectionPrayer = null;
+		lastActivationAttempted = false;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -180,6 +182,7 @@ public class TargetWeaponPlugin extends Plugin
 					lastPrayerTriggerTick = tick;
 					pendingPrayerActivation = true;
 					desiredProtectionPrayer = targetPrayer;
+					lastActivationAttempted = false;
 					if (prayerActionState == PrayerActionState.IDLE)
 					{
 						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
@@ -301,6 +304,7 @@ public class TargetWeaponPlugin extends Plugin
 			pendingPrayerActivation = false;
 			prayerActionState = PrayerActionState.IDLE;
 			desiredProtectionPrayer = null;
+			lastActivationAttempted = false;
 			return;
 		}
 
@@ -323,8 +327,19 @@ public class TargetWeaponPlugin extends Plugin
 					break;
 				}
 				client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(desiredProtectionPrayer));
-				prayerActionState = PrayerActionState.VERIFY;
-				nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
+				lastActivationAttempted = true;
+				if (config.preferUiPath())
+				{
+					prayerActionState = PrayerActionState.VERIFY;
+					nextPrayerActionTick = tick + Math.max(0, config.actionDelayTicks());
+				}
+				else
+				{
+					pendingPrayerActivation = false;
+					prayerActionState = PrayerActionState.IDLE;
+					nextPrayerActionTick = -1;
+					desiredProtectionPrayer = null;
+				}
 				break;
 
 			case VERIFY:
@@ -337,6 +352,7 @@ public class TargetWeaponPlugin extends Plugin
 				prayerActionState = PrayerActionState.IDLE;
 				nextPrayerActionTick = -1;
 				desiredProtectionPrayer = null;
+				lastActivationAttempted = false;
 				break;
 
 			case IDLE:
