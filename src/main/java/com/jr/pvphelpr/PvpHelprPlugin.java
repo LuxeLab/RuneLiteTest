@@ -348,8 +348,8 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		client.menuAction(-1, spellWidget.getId(), MenuAction.CC_OP, 1, 0, "Cast", spell.label());
-		logStep("Spell cast action sent: " + spell.label() + " widgetId=" + spellWidget.getId());
+		client.menuAction(-1, spellWidget.getId(), MenuAction.WIDGET_TARGET, 0, -1, "Cast", spell.label());
+		logStep("Spell cast action sent: " + spell.label() + " widgetId=" + spellWidget.getId() + " action=WIDGET_TARGET");
 
 		pendingSpellVerifyLabel = spell.label();
 		pendingSpellVerifyTick = client.getTickCount() + 1;
