@@ -3,10 +3,12 @@ package com.jr.pvphelpr;
 import com.google.inject.Provides;
 import java.awt.event.KeyEvent;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +25,7 @@ import net.runelite.api.Prayer;
 import net.runelite.api.kit.KitType;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetID;
+import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -33,6 +36,7 @@ import net.runelite.client.input.KeyListener;
 import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.ui.overlay.OverlayManager;
 
 @Slf4j
 @PluginDescriptor(
@@ -59,7 +63,15 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	@Inject
 	private PvpHelprConfig config;
 
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private PvpHelprOverlay overlay;
+
 	private boolean defensiveEnabled;
+	private final Deque<String> debugLines = new ArrayDeque<>();
+	private static final int MAX_DEBUG_LINES = 10;
 	private int lastTargetId = -1;
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int lastPrayerSwitchTick = -9999;
@@ -80,14 +92,21 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		lastWeaponId = Integer.MIN_VALUE;
 		weaponStyleCache.clear();
 		prayerWidgetCache.clear();
+		debugLines.clear();
 		keyManager.registerKeyListener(this);
-		log.info("PvP Helpr started. Defensive enabled={}", defensiveEnabled);
+		if (config.showOverlay())
+		{
+			overlayManager.add(overlay);
+		}
+		logStep("Startup complete. Defensive=" + defensiveEnabled);
+		logStep("Overlay=" + (config.showOverlay() ? "ON" : "OFF"));
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		keyManager.unregisterKeyListener(this);
+		overlayManager.remove(overlay);
 		log.info("PvP Helpr stopped");
 	}
 
@@ -123,6 +142,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			CombatStyle style = classifyWeaponStyle(weaponItemId);
 			Prayer prayer = defensivePrayerForStyle(style);
+			logStep("Defensive detect: target=" + safe(target.getName()) + " weapon=" + weaponItemId + " style=" + style + " prayer=" + (prayer == null ? "none" : prayerLabel(prayer)));
 			if (prayer != null)
 			{
 				int tick = client.getTickCount();
@@ -130,6 +150,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				{
 					lastPrayerSwitchTick = tick;
 					activatePrayer(prayer);
+				}
+				else
+				{
+					logStep("Defensive prayer skipped due to cooldown");
 				}
 			}
 		}
@@ -144,12 +168,13 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		if (config.defensiveToggleKey().matches(e))
 		{
 			defensiveEnabled = !defensiveEnabled;
-			log.info("[PvP Helpr] Defensive Prayer Switching {}", defensiveEnabled ? "ON" : "OFF");
+			logStep("Defensive Prayer Switching " + (defensiveEnabled ? "ON" : "OFF"));
 			return;
 		}
 
 		if (config.enablePvpOne() && config.profileOneToggleKey().matches(e))
 		{
+			logStep("Profile One hotkey pressed");
 			clientThread.invoke(this::runProfileOne);
 		}
 	}
@@ -161,8 +186,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	{
 		if (client.getGameState() != GameState.LOGGED_IN)
 		{
+			logStep("Profile One aborted: not logged in");
 			return;
 		}
+
+		logStep("Profile One start");
 
 		equipItemsFromInventory(config.gearToEquip());
 		enablePrayers(config.prayersToEnable());
@@ -175,8 +203,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 		if (config.enableReverseSwapGear())
 		{
+			logStep("Reverse swap enabled");
 			equipItemsFromInventory(config.reverseSwapGear());
 		}
+
+		logStep("Profile One complete");
 	}
 
 	private void equipItemsFromInventory(String csvIds)
@@ -189,14 +220,17 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
 		if (inv == null)
 		{
+			logStep("Equip aborted: inventory unavailable");
 			return;
 		}
 
 		int[] wanted = parseIds(csvIds);
 		Item[] items = inv.getItems();
 
+		int invWidgetId = WidgetInfo.INVENTORY.getId();
 		for (int wantedId : wanted)
 		{
+			boolean equipped = false;
 			for (int slot = 0; slot < items.length; slot++)
 			{
 				Item item = items[slot];
@@ -206,8 +240,10 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 				}
 
 				String name = safe(itemManager.getItemComposition(wantedId).getName());
-				client.menuAction(slot, WidgetID.INVENTORY_GROUP_ID << 16, MenuAction.CC_OP, 1, wantedId, "Wield", name);
-				client.menuAction(slot, WidgetID.INVENTORY_GROUP_ID << 16, MenuAction.CC_OP, 1, wantedId, "Wear", name);
+				logStep("Equip try: " + name + " (" + wantedId + ") slot=" + slot);
+				client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wield", name);
+				client.menuAction(slot, invWidgetId, MenuAction.CC_OP, 1, wantedId, "Wear", name);
+				equipped = true;
 				break;
 			}
 		}
@@ -229,8 +265,14 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private void activatePrayerByName(String prayerName)
 	{
 		Prayer prayer = parsePrayer(prayerName);
-		if (prayer == null || client.isPrayerActive(prayer))
+		if (prayer == null)
 		{
+			logStep("Prayer parse failed for input: " + prayerName);
+			return;
+		}
+		if (client.isPrayerActive(prayer))
+		{
+			logStep("Prayer already active: " + prayerLabel(prayer));
 			return;
 		}
 		activatePrayer(prayer);
@@ -242,49 +284,56 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		int widgetId = widgetIdForPrayer(prayer);
 		if (widgetId == -1)
 		{
-			log.info("[PvP Helpr] Prayer widget not found for {}", prayer);
+			logStep("Prayer widget not found for " + prayerLabel(prayer));
 			return;
 		}
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Activate", prayerLabel(prayer));
+		logStep("Prayer action sent: " + prayerLabel(prayer));
 	}
 
 	private void selectSpell(PvpHelprSpell spell)
 	{
 		if (spell == null || spell == PvpHelprSpell.NONE)
 		{
+			logStep("Spell select skipped: NONE");
 			return;
 		}
 
 		Widget root = client.getWidget(WidgetID.SPELLBOOK_GROUP_ID, 0);
 		if (root == null)
 		{
+			logStep("Spell select aborted: spellbook root missing");
 			return;
 		}
 
 		int widgetId = findWidgetByName(root, spell.label());
 		if (widgetId == -1)
 		{
-			log.info("[PvP Helpr] Spell widget not found: {}", spell.label());
+			logStep("Spell widget not found: " + spell.label());
 			return;
 		}
 
 		client.menuAction(-1, widgetId, MenuAction.CC_OP, 1, 0, "Cast", spell.label());
+		logStep("Spell selected: " + spell.label());
 	}
 
 	private void attackCurrentTarget()
 	{
 		if (client.getLocalPlayer() == null)
 		{
+			logStep("Attack skipped: local player null");
 			return;
 		}
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
 		{
+			logStep("Attack skipped: no player target");
 			return;
 		}
 
 		Player target = (Player) interacting;
 		client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, target.getId(), 0, "Attack", safe(target.getName()));
+		logStep("Attack action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
 	}
 
 	private int findWidgetByName(Widget root, String needle)
@@ -485,6 +534,22 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return "";
 		}
 		return s.replaceAll("<[^>]+>", "");
+	}
+
+	private void logStep(String message)
+	{
+		String line = "[PvP Helpr] " + message;
+		log.info(line);
+		debugLines.addFirst(message);
+		while (debugLines.size() > MAX_DEBUG_LINES)
+		{
+			debugLines.removeLast();
+		}
+	}
+
+	List<String> getOverlayLines()
+	{
+		return new ArrayList<>(debugLines);
 	}
 
 	private enum CombatStyle

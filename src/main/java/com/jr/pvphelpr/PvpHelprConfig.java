@@ -169,6 +169,18 @@ public interface PvpHelprConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "showOverlay",
+		name = "Show Overlay",
+		description = "Show PvP Helpr debug overlay",
+		position = 19,
+		section = profileOneSection
+	)
+	default boolean showOverlay()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "reverseSwapGear",
 		name = "Reverse Swap Gear",
 		description = "Comma-separated item IDs for reverse swap",
