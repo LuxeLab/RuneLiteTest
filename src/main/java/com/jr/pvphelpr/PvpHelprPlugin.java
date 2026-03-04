@@ -79,6 +79,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	private static final int MAX_DEBUG_LINES = 10;
 	private int lastTargetId = -1;
 	private String currentTargetDisplay = "none";
+	private String targetSourceDisplay = "none";
 	private int lastWeaponId = Integer.MIN_VALUE;
 	private int stickyTargetId = -1;
 	private String stickyTargetName = "";
@@ -109,6 +110,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		prayerWidgetCache.clear();
 		debugLines.clear();
 		currentTargetDisplay = "none";
+		targetSourceDisplay = "none";
 		pendingSpellVerifyLabel = null;
 		pendingSpellVerifyTick = -1;
 		keyManager.registerKeyListener(this);
@@ -151,15 +153,17 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		Actor interacting = client.getLocalPlayer().getInteracting();
-		if (!(interacting instanceof Player))
+		ResolvedTarget resolved = resolveCombatTarget();
+		if (resolved == null)
 		{
 			lastTargetId = -1;
 			lastWeaponId = Integer.MIN_VALUE;
+			targetSourceDisplay = "none";
 			int tick = client.getTickCount();
 			if (stickyTargetId != -1 && tick <= stickyTargetExpireTick)
 			{
 				currentTargetDisplay = stickyTargetName + " (id=" + stickyTargetId + ") [trail " + (stickyTargetExpireTick - tick) + "t]";
+				targetSourceDisplay = "sticky";
 			}
 			else
 			{
@@ -171,8 +175,9 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return;
 		}
 
-		Player target = (Player) interacting;
+		Player target = resolved.player;
 		currentTargetDisplay = safe(target.getName()) + " (id=" + target.getId() + ")";
+		targetSourceDisplay = resolved.source.name().toLowerCase(Locale.ROOT);
 		stickyTargetId = target.getId();
 		stickyTargetName = safe(target.getName());
 		stickyTargetExpireTick = client.getTickCount() + Math.max(0, config.targetTrailTicks());
@@ -269,12 +274,11 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			{
 				if (config.spellToCast() != null && config.spellToCast() != PvpHelprSpell.NONE)
 				{
-					Actor a = client.getLocalPlayer() == null ? null : client.getLocalPlayer().getInteracting();
-					if (a instanceof Player)
+					ResolvedTarget rt = resolveCombatTarget();
+					if (rt != null)
 					{
-						Player p = (Player) a;
-						pendingCastTargetId = p.getId();
-						pendingCastTargetName = safe(p.getName());
+						pendingCastTargetId = rt.player.getId();
+						pendingCastTargetName = safe(rt.player.getName());
 					}
 					else if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
 					{
@@ -284,7 +288,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 					}
 					else
 					{
-						logStep("Queued cast skipped: no live or sticky target at queue time");
+						logStep("Queued cast skipped: no live/inbound/sticky target at queue time");
 						return true;
 					}
 
@@ -490,26 +494,20 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 			return false;
 		}
 
-		if (client.getLocalPlayer() == null)
+		ResolvedTarget rt = resolveCombatTarget();
+		if (rt != null)
 		{
-			logStep("Cast-on-target skipped: local player null");
-			return false;
+			return castSelectedSpellOnTarget(rt.player.getId(), safe(rt.player.getName()));
 		}
 
-		Actor interacting = client.getLocalPlayer().getInteracting();
-		if (!(interacting instanceof Player))
+		if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
 		{
-			if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
-			{
-				logStep("Cast-on-target using sticky target fallback");
-				return castSelectedSpellOnTarget(stickyTargetId, stickyTargetName);
-			}
-			logStep("Cast-on-target skipped: no player target");
-			return false;
+			logStep("Cast-on-target using sticky target fallback");
+			return castSelectedSpellOnTarget(stickyTargetId, stickyTargetName);
 		}
 
-		Player target = (Player) interacting;
-		return castSelectedSpellOnTarget(target.getId(), safe(target.getName()));
+		logStep("Cast-on-target skipped: no resolved target");
+		return false;
 	}
 
 	private boolean castSelectedSpellOnTarget(int targetId, String targetName)
@@ -531,27 +529,22 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 
 	private void attackCurrentTarget()
 	{
-		if (client.getLocalPlayer() == null)
+		ResolvedTarget rt = resolveCombatTarget();
+		if (rt != null)
 		{
-			logStep("Attack skipped: local player null");
-			return;
-		}
-		Actor interacting = client.getLocalPlayer().getInteracting();
-		if (!(interacting instanceof Player))
-		{
-			if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
-			{
-				client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, stickyTargetId, 0, "Attack", stickyTargetName);
-				logStep("Attack action sent using sticky target -> " + stickyTargetName + " (id=" + stickyTargetId + ")");
-				return;
-			}
-			logStep("Attack skipped: no player target");
+			client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, rt.player.getId(), 0, "Attack", safe(rt.player.getName()));
+			logStep("Attack action sent -> " + safe(rt.player.getName()) + " (id=" + rt.player.getId() + ", source=" + rt.source + ")");
 			return;
 		}
 
-		Player target = (Player) interacting;
-		client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, target.getId(), 0, "Attack", safe(target.getName()));
-		logStep("Attack action sent -> " + safe(target.getName()) + " (id=" + target.getId() + ")");
+		if (stickyTargetId != -1 && client.getTickCount() <= stickyTargetExpireTick)
+		{
+			client.menuAction(0, 0, MenuAction.PLAYER_FIRST_OPTION, stickyTargetId, 0, "Attack", stickyTargetName);
+			logStep("Attack action sent using sticky target -> " + stickyTargetName + " (id=" + stickyTargetId + ")");
+			return;
+		}
+
+		logStep("Attack skipped: no resolved target");
 	}
 
 	private Widget findWidgetObjectByName(Widget root, String needle)
@@ -838,6 +831,7 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 	{
 		ArrayList<String> lines = new ArrayList<>();
 		lines.add("Target: " + currentTargetDisplay);
+		lines.add("Source: " + targetSourceDisplay);
 		lines.add("Sticky: " + (stickyTargetId == -1 ? "none" : (stickyTargetName + " (id=" + stickyTargetId + ")")));
 		lines.add("Defensive: " + (defensiveEnabled ? "ON" : "OFF"));
 		lines.addAll(debugLines);
@@ -867,6 +861,53 @@ public class PvpHelprPlugin extends Plugin implements KeyListener
 		{
 			logStep("Spell verify FAIL: expected='" + expected + "' selectedFlag=" + selectedFlag + " selectedWidget='" + selectedName + "'");
 		}
+	}
+
+	private ResolvedTarget resolveCombatTarget()
+	{
+		if (client.getLocalPlayer() == null)
+		{
+			return null;
+		}
+
+		Actor interacting = client.getLocalPlayer().getInteracting();
+		if (interacting instanceof Player)
+		{
+			return new ResolvedTarget((Player) interacting, TargetSource.OUTBOUND);
+		}
+
+		for (Player p : client.getPlayers())
+		{
+			if (p == null || p == client.getLocalPlayer())
+			{
+				continue;
+			}
+			Actor a = p.getInteracting();
+			if (a == client.getLocalPlayer())
+			{
+				return new ResolvedTarget(p, TargetSource.INBOUND);
+			}
+		}
+
+		return null;
+	}
+
+	private static class ResolvedTarget
+	{
+		private final Player player;
+		private final TargetSource source;
+
+		private ResolvedTarget(Player player, TargetSource source)
+		{
+			this.player = player;
+			this.source = source;
+		}
+	}
+
+	private enum TargetSource
+	{
+		OUTBOUND,
+		INBOUND
 	}
 
 	private enum CombatStyle
