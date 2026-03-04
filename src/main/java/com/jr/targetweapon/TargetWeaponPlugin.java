@@ -85,6 +85,7 @@ public class TargetWeaponPlugin extends Plugin
 	private long traceDetectMs = -1;
 	private long traceInvokeMs = -1;
 	private long traceFeedbackMs = -1;
+	private boolean traceAwaitingFeedback;
 
 	@Provides
 	TargetWeaponConfig provideConfig(ConfigManager configManager)
@@ -111,6 +112,7 @@ public class TargetWeaponPlugin extends Plugin
 		pendingBlockedDialogLogged = false;
 		traceDetectTick = traceInvokeTick = traceFeedbackTick = -1;
 		traceDetectMs = traceInvokeMs = traceFeedbackMs = -1;
+		traceAwaitingFeedback = false;
 		recentLogLines.clear();
 		if (config.showOverlay())
 		{
@@ -134,9 +136,6 @@ public class TargetWeaponPlugin extends Plugin
 			return;
 		}
 
-		processPrayerStateMachine();
-		checkPrayerBlockDialog();
-
 		Actor interacting = client.getLocalPlayer().getInteracting();
 		if (!(interacting instanceof Player))
 		{
@@ -150,6 +149,8 @@ public class TargetWeaponPlugin extends Plugin
 			{
 				log.info("[TARGET] no player target");
 			}
+			processPrayerStateMachine();
+			checkPrayerBlockDialog();
 			return;
 		}
 
@@ -208,6 +209,7 @@ public class TargetWeaponPlugin extends Plugin
 					traceDetectMs = pendingActivationStartMs;
 					traceInvokeTick = traceFeedbackTick = -1;
 					traceInvokeMs = traceFeedbackMs = -1;
+					traceAwaitingFeedback = false;
 					if (prayerActionState == PrayerActionState.IDLE)
 					{
 						prayerActionState = config.preferUiPath() ? PrayerActionState.OPEN_PRAYER_TAB : PrayerActionState.ACTIVATE_PROTECTION_PRAYER;
@@ -220,6 +222,10 @@ public class TargetWeaponPlugin extends Plugin
 		lastTargetName = targetName;
 		lastTargetIndex = targetIndex;
 		lastWeaponId = normalizedWeaponId;
+
+		// Process action pipeline after detection so same-tick triggers can execute immediately.
+		processPrayerStateMachine();
+		checkPrayerBlockDialog();
 	}
 
 	private static int normalizeItemId(int equipmentId)
@@ -364,6 +370,7 @@ public class TargetWeaponPlugin extends Plugin
 				lastActivationAttempted = true;
 				traceInvokeTick = tick;
 				traceInvokeMs = System.currentTimeMillis();
+				traceAwaitingFeedback = true;
 				log.info("[TARGETTRACE] detect->invoke: {} ticks, {} ms", (traceDetectTick >= 0 ? traceInvokeTick - traceDetectTick : -1), (traceDetectMs > 0 ? traceInvokeMs - traceDetectMs : -1));
 				if (config.preferUiPath())
 				{
@@ -376,6 +383,7 @@ public class TargetWeaponPlugin extends Plugin
 					prayerActionState = PrayerActionState.IDLE;
 					nextPrayerActionTick = -1;
 					desiredProtectionPrayer = null;
+					// keep traceAwaitingFeedback=true to capture MESBOX feedback timing in non-UI mode
 				}
 				break;
 
@@ -575,7 +583,7 @@ public class TargetWeaponPlugin extends Plugin
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
-		if (!pendingPrayerActivation)
+		if (!traceAwaitingFeedback)
 		{
 			return;
 		}
@@ -599,6 +607,7 @@ public class TargetWeaponPlugin extends Plugin
 		long dtfMs = (traceDetectMs > 0) ? (traceFeedbackMs - traceDetectMs) : -1;
 		log.warn("[TARGETTRACE] detect->invoke={} ticks ({}ms), invoke->feedback={} ticks ({}ms), total={} ticks ({}ms), msg='{}'", dti, dtiMs, itf, itfMs, dtf, dtfMs, event.getMessage());
 		addLine("Trace total: " + dtf + " ticks");
+		traceAwaitingFeedback = false;
 	}
 
 	private enum PrayerActionState
